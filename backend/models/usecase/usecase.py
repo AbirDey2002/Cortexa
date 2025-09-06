@@ -1,5 +1,5 @@
 from sqlalchemy import Column, ForeignKey, DateTime, JSON, String, Integer, Boolean, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
@@ -14,6 +14,8 @@ class UsecaseMetadata(Base):
     __tablename__ = "usecase_metadata"
 
     usecase_id = Column(UUID(as_uuid=True), primary_key = True, default = uuid.uuid4)
+    user_id = Column(UUID(as_uuid = True), ForeignKey("users.id"), nullable = False)
+    chat_history = Column(JSON, nullable = True)
     usecase_name = Column(String, nullable=False)
     text_extraction = Column(String(50), default="Not Started")
     requirement_generation = Column(String(50), default="Not Started")
@@ -24,3 +26,6 @@ class UsecaseMetadata(Base):
     created_at = Column(DateTime, default = func.now(), nullable = False)
     updated_at = Column(DateTime, default = func.now(), onupdate = func.now(), nullable = False)
     email = Column(String, nullable = False)
+
+    # Relationships
+    user = relationship("User")

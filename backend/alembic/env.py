@@ -14,6 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # Import your Base and models here so Alembic's autogenerate can see them
 from models.base import Base
 from models.user.user import User
+from models.usecase.usecase import UsecaseMetadata
+from models.file_processing.file_metadata import FileMetadata
+from models.file_processing.ocr_records import OCRInfo, OCROutputs
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
