@@ -29,3 +29,4 @@ class UsecaseMetadata(Base):
 
     # Relationships
     user = relationship("User")
+    requirements = relationship("Requirement", back_populates="usecase")

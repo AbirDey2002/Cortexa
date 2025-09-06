@@ -17,6 +17,10 @@ from models.user.user import User
 from models.usecase.usecase import UsecaseMetadata
 from models.file_processing.file_metadata import FileMetadata
 from models.file_processing.ocr_records import OCRInfo, OCROutputs
+from models.generator.requirement import Requirement
+from models.generator.scenario import Scenario
+from models.generator.test_case import TestCase
+from models.generator.test_script import TestScript
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
