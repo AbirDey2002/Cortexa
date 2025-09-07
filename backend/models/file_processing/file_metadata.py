@@ -41,6 +41,8 @@ class FileMetadata(Base):
     # Relationships
     user = relationship("User")
     usecase = relationship("UsecaseMetadata")
+    ocr_info = relationship("OCRInfo", back_populates="file", uselist=True)
+    ocr_outputs = relationship("OCROutputs", back_populates="file", uselist=True)
 
     def __repr__(self):
         return f"<FileMetadata(file_id='{self.file_id}', file_name='{self.file_name}')>"
