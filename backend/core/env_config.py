@@ -1,4 +1,8 @@
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class EnvConfig:
@@ -76,5 +80,4 @@ def get_aws_config() -> dict:
         "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
         "S3_BUCKET_NAME": os.getenv("S3_BUCKET_NAME", ""),
     }
-
 

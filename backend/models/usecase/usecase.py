@@ -22,6 +22,7 @@ class UsecaseMetadata(Base):
     scenario_generation = Column(String(50), default="Not Started")
     test_case_generation = Column(String(50), default="Not Started")
     test_script_generation = Column(String(50), default="Not Started")
+    status = Column(String(20), default="Completed", nullable=False)
     is_deleted = Column(Boolean, default = False, nullable = False)
     created_at = Column(DateTime, default = func.now(), nullable = False)
     updated_at = Column(DateTime, default = func.now(), onupdate = func.now(), nullable = False)
@@ -29,4 +30,5 @@ class UsecaseMetadata(Base):
 
     # Relationships
     user = relationship("User")
-    requirements = relationship("Requirement", back_populates="usecase")
+    # Use string literal for relationship to avoid circular import
+    requirements = relationship("Requirement", back_populates="usecase", lazy="noload")

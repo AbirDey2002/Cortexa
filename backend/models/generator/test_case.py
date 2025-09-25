@@ -39,9 +39,11 @@ class TestCase(Base):
 
     # Relationships
     scenario = relationship("Scenario", back_populates="test_cases")
-    test_script = relationship(
-        "TestScript", back_populates="test_case", uselist=False
-    )
+    # Disable test_script relationship to avoid circular dependency
+    # test_script = relationship(
+    #     "TestScript", back_populates="test_case", uselist=False,
+    #     post_update=True
+    # )
 
     def __repr__(self):
         return f"<TestCase(id='{self.id}', scenario_id='{self.scenario_id}')>"

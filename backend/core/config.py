@@ -10,6 +10,16 @@ from .env_config import (
     get_aws_config,
 )
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Ensure backend/.env is loaded into process env before any os.getenv calls
+_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+try:
+    load_dotenv(_ENV_PATH, override=True)
+except Exception:
+    # fallback to default loader
+    load_dotenv(override=True)
 
 
 class DatabasePoolConfigs:
@@ -53,7 +63,7 @@ class Settings(BaseSettings):
     )
 
     HOST: str = os.getenv("HOST", "0.0.0.0")
-    PORT: int = int(os.getenv("PORT", "8002"))
+    PORT: int = int(os.getenv("PORT", "8000"))
 
     AWS_ACCESS_KEY_ID: str = _aws_config.get("AWS_ACCESS_KEY_ID", "")
     AWS_SECRET_ACCESS_KEY: str = _aws_config.get("AWS_SECRET_ACCESS_KEY", "")

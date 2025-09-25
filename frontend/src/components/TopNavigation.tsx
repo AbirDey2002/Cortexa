@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useSidebar } from "@/components/ui/sidebar";
 
 interface TopNavigationProps {
   currentModel: string;
@@ -24,16 +25,18 @@ const availableModels = [
 
 export function TopNavigation({ currentModel, onModelChange }: TopNavigationProps) {
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const { state: sidebarState } = useSidebar();
+  const isSidebarCollapsed = sidebarState === "collapsed";
 
   return (
-    <header className="h-14 border-b border-border bg-card/50 backdrop-blur-sm">
-      <div className="flex items-center justify-between h-full px-6">
+    <div className="flex-1 transition-all duration-300">
+      <div className={`flex items-center justify-between h-full ${!isSidebarCollapsed ? 'pl-4' : ''}`}>
         {/* Left Side - Model Selector */}
         <DropdownMenu open={isModelDropdownOpen} onOpenChange={setIsModelDropdownOpen}>
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
-              className="text-foreground hover:bg-accent hover:text-accent-foreground px-3 py-2 h-9"
+              className="text-foreground hover:bg-accent hover:text-accent-foreground px-2 sm:px-3 py-2 h-8 sm:h-9 text-xs sm:text-sm md:text-base"
             >
               <span className="font-medium">{currentModel}</span>
               <ChevronDown className="ml-2 h-4 w-4" />
@@ -69,10 +72,10 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
         {/* Right Side - User Account */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="relative h-9 w-9 rounded-full">
-              <Avatar className="h-9 w-9">
+            <Button variant="ghost" className="relative h-7 w-7 sm:h-8 sm:w-8 md:h-9 md:w-9 rounded-full">
+              <Avatar className="h-7 w-7 sm:h-8 sm:w-8 md:h-9 md:w-9">
                 <AvatarImage src="/placeholder-avatar.jpg" alt="Abir" />
-                <AvatarFallback className="bg-primary text-primary-foreground">
+                <AvatarFallback className="bg-primary text-primary-foreground text-xs sm:text-sm md:text-base">
                   A
                 </AvatarFallback>
               </Avatar>
@@ -106,6 +109,6 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-    </header>
+    </div>
   );
 }

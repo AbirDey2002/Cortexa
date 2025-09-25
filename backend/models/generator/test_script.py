@@ -38,7 +38,8 @@ class TestScript(Base):
     is_deleted = Column(Boolean, default=False, nullable=False)
 
     # Relationships
-    test_case = relationship("TestCase", back_populates="test_script")
+    # Disable relationship to avoid circular dependency
+    # test_case = relationship("TestCase", back_populates="test_script")
 
     def __repr__(self):
         return f"<TestScript(id='{self.id}', test_case_id='{self.test_case_id}')>"

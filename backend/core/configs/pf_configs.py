@@ -1,8 +1,10 @@
 
+import os
+
 class PFImageToTextConfigs:
-    api_key = "magicplatform.7881874f7df9423d94b6fFd8ebd6e279"
-    username = "igtb.abir"
-    password = "ASHsussbi@202505"
-    asset_id = "73e2aa47-1578-4af5-b01e-a6bb23bfa46d"
+    api_key = os.getenv("PF_API_KEY", "")
+    username = os.getenv("PF_USERNAME", "")
+    password = os.getenv("PF_PASSWORD", "")
+    asset_id = os.getenv("PF_ASSET_ID", "")
 
 
