@@ -76,8 +76,28 @@ def create_chat(asset_headers, payload):
     response = req.post(
         PF_CREATE_CONVERSATION_URL,
         headers=asset_headers, json=payload)
-    conversation_id = response.json()['conversation_details']['conversation_id']
-    return conversation_id
+    
+    try:
+        response_data = response.json()
+        
+        # Check if response contains the expected structure
+        if 'conversation_details' in response_data and 'conversation_id' in response_data['conversation_details']:
+            conversation_id = response_data['conversation_details']['conversation_id']
+            return conversation_id
+        else:
+            # Handle different response structures
+            # Try alternative structures that might exist
+            if 'conversation_id' in response_data:
+                conversation_id = response_data['conversation_id']
+                return conversation_id
+            elif 'id' in response_data:
+                conversation_id = response_data['id']
+                return conversation_id
+            else:
+                return None
+                
+    except Exception as e:
+        return None
 
 
 def asset_post(asset_headers, asset_payload):
@@ -95,8 +115,23 @@ def asset_post(asset_headers, asset_payload):
         PF_ADD_MESSAGE_URL,
         headers=asset_headers, json=asset_payload)
     
-    message_id = asset_post.json()['message_id']
-    return message_id
+    try:
+        response_data = asset_post.json()
+        
+        # Check if response contains the expected message_id
+        if 'message_id' in response_data:
+            message_id = response_data['message_id']
+            return message_id
+        else:
+            # Try alternative structures
+            if 'id' in response_data:
+                message_id = response_data['id']
+                return message_id
+            else:
+                return None
+                
+    except Exception as e:
+        return None
 
 
 def get_response(asset_headers, conversation_id, message_id):
@@ -246,14 +281,14 @@ def invoke_asset(asset_id_param=None, query=None) -> Tuple[str, float, int]:
     conversation_id = create_chat(asset_headers, create_payload)
     
     if not conversation_id:
-        return "Error: Failed to create conversation", 0, 0
+        return "Error: Failed to create conversation - check API credentials and endpoint", 0, 0
 
     # Invoke asset
     asset_payload = {"conversation_id": conversation_id, "query": query_to_send, "KB_Types": []}
     message_id = asset_post(asset_headers, asset_payload)
     
     if not message_id:
-        return "Error: Failed to post message", 0, 0
+        return "Error: Failed to post message - check conversation ID and message format", 0, 0
 
     # Get response
     output = get_response(asset_headers, conversation_id, message_id)
@@ -316,7 +351,7 @@ def invoke_asset_with_proper_timeout(asset_id_param=None, query=None, timeout_se
         conversation_id = create_chat(asset_headers, create_payload)
         
         if not conversation_id:
-            return "Error: Failed to create conversation", 0, 0
+            return "Error: Failed to create conversation - check API credentials and endpoint", 0, 0
 
         # Invoke asset with timeout check
         if time.time() - start_time > timeout_seconds:
@@ -326,7 +361,7 @@ def invoke_asset_with_proper_timeout(asset_id_param=None, query=None, timeout_se
         message_id = asset_post(asset_headers, asset_payload)
         
         if not message_id:
-            return "Error: Failed to post message", 0, 0
+            return "Error: Failed to post message - check conversation ID and message format", 0, 0
 
         # Calculate remaining time for get_response
         elapsed_time = time.time() - start_time

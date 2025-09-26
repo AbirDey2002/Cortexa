@@ -8,6 +8,7 @@ import uuid
 import time
 from datetime import datetime
 import asyncio
+import os
 import logging
 from typing import AsyncIterator, Dict, List, Optional
 from services.llm.text2text_conversational.asset_invoker import invoke_asset_with_proper_timeout
@@ -93,7 +94,7 @@ def _run_chat_inference(usecase_id: str, user_message: str):
         logger.info(f"Starting chat inference for usecase_id={usecase_id}")
         
         # Call asset_invoker
-        asset_id = "5df1fa69-6218-4482-a92b-bc1c2c168e3e"  # Default asset ID
+        asset_id = os.getenv("ASSET_ID", "5df1fa69-6218-4482-a92b-bc1c2c168e3e")
         logger.info(f"Calling asset_invoker for usecase {usecase_id} with message: {user_message}")
         
         try:

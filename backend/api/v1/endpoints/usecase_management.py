@@ -280,7 +280,7 @@ def _run_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, timeout_s
             logger.error("Usecase not found for inference: %s", usecase_id)
             return
         try:
-            asset_id = os.getenv("PF_CONVERSATION_ASSET_ID", "5df1fa69-6218-4482-a92b-bc1c2c168e3e")
+            asset_id = os.getenv("ASSET_ID", "5df1fa69-6218-4482-a92b-bc1c2c168e3e")
             response_text, cost, tokens = invoke_asset_with_proper_timeout(asset_id_param=asset_id, query=user_message, timeout_seconds=timeout_seconds)
             assistant_text = _parse_agent_output(response_text)
             history = record.chat_history or []
