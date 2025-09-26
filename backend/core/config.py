@@ -35,6 +35,10 @@ class OCRServiceConfigs:
     NUM_WORKERS = int(os.getenv("OCR_NUM_WORKERS", "20"))
     MAX_RETRIES = int(os.getenv("OCR_MAX_RETRIES", "3"))
     BATCH_SIZE = int(os.getenv("OCR_BATCH_SIZE", "1"))
+    
+    # Security: Control OCR text logging to prevent sensitive content exposure
+    LOG_OCR_TEXT = os.getenv("LOG_OCR_TEXT", "false").lower() == "true"
+    OCR_TEXT_LOG_MAX_LENGTH = int(os.getenv("OCR_TEXT_LOG_MAX_LENGTH", "200"))  # Limit logged text length
 
 
 class Settings(BaseSettings):

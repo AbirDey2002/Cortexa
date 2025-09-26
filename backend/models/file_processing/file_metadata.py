@@ -5,6 +5,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     TIMESTAMP,
+    Text,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID as pgUUID
@@ -28,6 +29,7 @@ class FileMetadata(Base):
     file_name = Column(String(255), nullable=False)
     file_link = Column(String(255), nullable=False)  # Online storage URL
     user_id = Column(pgUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    
 
     # Timestamps
     created_at = Column(TIMESTAMP, default=func.now(), nullable=False)

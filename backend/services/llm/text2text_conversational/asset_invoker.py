@@ -358,4 +358,4 @@ if __name__ == "__main__":
     response, cost, tokens = invoke_asset(test_asset_id, test_query)
     print(f"\nResponse: {response}")
     print(f"Cost: {cost}")
-    print(f"Tokens: {tokens}")
+    # print(f"Tokens: {tokens}")  # Disabled to prevent sensitive info exposure

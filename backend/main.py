@@ -1,6 +1,10 @@
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables before importing config classes
+
 from fastapi import FastAPI, Response, BackgroundTasks, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from models.base import Base
 from db.session import engine
@@ -29,6 +33,12 @@ app = FastAPI(title="cortexa backend")
 
 # Include API router
 app.include_router(api_router)
+
+# Mount static files directory for serving uploaded files
+uploads_dir = "uploads"
+if not os.path.exists(uploads_dir):
+    os.makedirs(uploads_dir)
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 # In-memory storage for chat history
 chat_storage = {}

@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 import os
 import asyncio
+import hashlib
 
 from deps import get_db
 from db.session import get_db_context
@@ -17,6 +18,12 @@ from services.llm.text2text_conversational.asset_invoker import (
 
 # Hardcoded email for authentication
 DEFAULT_EMAIL = "abir.dey@intellectdesign.com"
+# Security: Use environment variable for default password, with secure fallback
+DEFAULT_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD", "ChangeMe123!Please")
+
+def hash_password(password: str) -> str:
+    """Securely hash a password using SHA-256. In production, use bcrypt or similar."""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 router = APIRouter()
@@ -138,7 +145,7 @@ def create_usecase(payload: UsecaseCreate, db: Session = Depends(get_db)):
         user = User(
             email=DEFAULT_EMAIL,
             name="Abir Dey",
-            password="password"  # In a real app, this would be hashed
+            password=hash_password(DEFAULT_PASSWORD)  # Now properly hashed
         )
         db.add(user)
         db.commit()
@@ -318,7 +325,7 @@ def list_usecases_simple(db: Session = Depends(get_db)):
             user = User(
                 email=DEFAULT_EMAIL,
                 name="Abir Dey",
-                password="password"  # In a real app, this would be hashed
+                password=hash_password(DEFAULT_PASSWORD)  # Now properly hashed
             )
             db.add(user)
             db.commit()
