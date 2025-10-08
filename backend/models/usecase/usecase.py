@@ -16,6 +16,7 @@ class UsecaseMetadata(Base):
     usecase_id = Column(UUID(as_uuid=True), primary_key = True, default = uuid.uuid4)
     user_id = Column(UUID(as_uuid = True), ForeignKey("users.id"), nullable = False)
     chat_history = Column(JSON, nullable = True)
+    chat_summary = Column(Text, nullable = True)  # New column for chat summary
     usecase_name = Column(String, nullable=False)
     text_extraction = Column(String(50), default="Not Started")
     requirement_generation = Column(String(50), default="Not Started")

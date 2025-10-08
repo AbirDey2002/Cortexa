@@ -81,3 +81,23 @@ def get_aws_config() -> dict:
         "S3_BUCKET_NAME": os.getenv("S3_BUCKET_NAME", ""),
     }
 
+
+def get_gemini_config() -> dict:
+    return {
+        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
+    }
+
+
+def get_env_variable(key: str, default: str = "") -> str:
+    """
+    Get environment variable value.
+    
+    Args:
+        key (str): Environment variable key
+        default (str): Default value if key not found
+        
+    Returns:
+        str: Environment variable value or default
+    """
+    return os.getenv(key, default)
+

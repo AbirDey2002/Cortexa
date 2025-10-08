@@ -12,9 +12,10 @@ from deps import get_db
 from db.session import get_db_context
 from models.usecase.usecase import UsecaseMetadata
 from models.user.user import User
-from services.llm.text2text_conversational.asset_invoker import (
-    invoke_asset_with_proper_timeout,
+from services.llm.gemini_conversational.gemini_invoker import (
+    invoke_gemini_chat_with_history_management,
 )
+from services.llm.gemini_conversational.json_output_parser import parse_llm_response
 
 # Hardcoded email for authentication
 DEFAULT_EMAIL = "abir.dey@intellectdesign.com"
@@ -227,6 +228,7 @@ def get_usecase_statuses(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
 class ChatMessage(BaseModel):
     role: str
     content: str
+    files: list[dict] | None = None  # Optional file information
 
 
 @router.get("/{usecase_id}/chat")
@@ -251,7 +253,32 @@ def get_chat_history(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
 
 
 def _parse_agent_output(raw_output: str) -> str:
-    """Extract user_answer string from PF agent output which may be wrapped in ```json fences."""
+    """Extract user_answer string from agent output (robust JSON-first parsing)."""
+    try:
+        user_answer, tool_call, parsing_success = parse_llm_response(raw_output)
+        return str(user_answer)[:10000]
+    except Exception:
+        try:
+            import json, re
+            text = raw_output.strip()
+            fence_match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
+            if fence_match:
+                text = fence_match.group(1)
+            data = json.loads(text)
+            if isinstance(data, dict) and "user_answer" in data:
+                return str(data["user_answer"])[:10000]
+        except Exception:
+            pass
+        return raw_output
+
+
+def _check_for_tool_call(raw_output: str) -> tuple[bool, str, dict]:
+    """
+    Check if the agent output contains a tool call.
+    
+    Returns:
+        tuple: (is_tool_call, tool_type, parsed_data)
+    """
     try:
         import json, re
         text = raw_output.strip()
@@ -260,11 +287,12 @@ def _parse_agent_output(raw_output: str) -> str:
         if fence_match:
             text = fence_match.group(1)
         data = json.loads(text)
-        if isinstance(data, dict) and "user_answer" in data:
-            return str(data["user_answer"])[:10000]
+        if isinstance(data, dict) and "tool_call" in data:
+            tool_type = data["tool_call"]
+            return True, tool_type, data
     except Exception:
         pass
-    return raw_output
+    return False, "", {}
 
 
 def _utc_now_iso() -> str:
@@ -280,13 +308,33 @@ def _run_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, timeout_s
             logger.error("Usecase not found for inference: %s", usecase_id)
             return
         try:
-            asset_id = os.getenv("ASSET_ID", "5df1fa69-6218-4482-a92b-bc1c2c168e3e")
-            response_text, cost, tokens = invoke_asset_with_proper_timeout(asset_id_param=asset_id, query=user_message, timeout_seconds=timeout_seconds)
+            # Use Gemini as default with history management
+            chat_history = record.chat_history or []
+            chat_summary = getattr(record, "chat_summary", None)
+
+            import asyncio
+            response_text, cost, tokens, updated_history, updated_summary, summarized = asyncio.run(
+                invoke_gemini_chat_with_history_management(
+                    usecase_id=usecase_id,
+                    query=user_message,
+                    chat_history=chat_history,
+                    chat_summary=chat_summary,
+                    db=db,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+
+            # Parse and persist
             assistant_text = _parse_agent_output(response_text)
-            history = record.chat_history or []
             system_entry = {"system": assistant_text, "timestamp": _utc_now_iso()}
+            
+            # Prepend response to updated history from Gemini manager if available
+            history = updated_history if updated_history is not None else (record.chat_history or [])
             history = [system_entry] + history
             record.chat_history = history
+            # Persist summary if updated
+            if updated_summary is not None:
+                record.chat_summary = updated_summary
             record.status = "Completed"
             logger.info("Completed chat inference for usecase_id=%s", usecase_id)
         except Exception as e:
@@ -305,6 +353,11 @@ async def append_chat_message(usecase_id: uuid.UUID, payload: ChatMessage, backg
     # Prepend user message, set status to In Progress
     history = record.chat_history or []
     user_entry = {"user": payload.content, "timestamp": _utc_now_iso()}
+    
+    # Add file information if provided
+    if payload.files:
+        user_entry["files"] = payload.files
+        
     history = [user_entry] + history
     record.chat_history = history
     record.status = "In Progress"

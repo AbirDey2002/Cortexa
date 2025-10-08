@@ -20,6 +20,10 @@ from core.logging_config import setup_logging
 import os
 from pathlib import Path
 from services.llm.text2text_conversational.asset_invoker import invoke_asset_with_proper_timeout
+from services.llm.gemini_conversational.json_output_parser import (
+    parse_llm_response,
+    create_enhanced_cortexa_prompt,
+)
 
 # Initialize database
 Base.metadata.create_all(bind=engine)
@@ -51,24 +55,58 @@ response_chunks: Dict[str, List[str]] = {}
 
 # Function to parse agent output
 def _parse_agent_output(raw_output: str) -> str:
-    """Extract user_answer string from PF agent output which may be wrapped in ```json fences."""
+    """Extract user_answer string from PF agent output using a robust JSON parser.
+
+    Falls back gracefully if the output contains extra text before/after the JSON
+    or is wrapped in markdown code fences.
+    """
     try:
-        import re
-        text = raw_output.strip()
-        # remove code fences if present
-        fence_match = re.search(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-        if fence_match:
-            text = fence_match.group(1)
-        data = json.loads(text)
-        if isinstance(data, dict) and "user_answer" in data:
-            return str(data["user_answer"])[:10000]
+        user_answer, tool_call, parsing_success = parse_llm_response(raw_output)
+        return str(user_answer)[:10000]
     except Exception as e:
-        logger.error(f"Error parsing agent output: {e}")
-    return raw_output
+        logger.error(f"Error parsing agent output with strict parser: {e}")
+        # Fallback to legacy parsing
+        try:
+            import re
+            text = raw_output.strip()
+            fence_match = re.search(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+            if fence_match:
+                text = fence_match.group(1)
+            data = json.loads(text)
+            if isinstance(data, dict) and "user_answer" in data:
+                return str(data["user_answer"])[:10000]
+        except Exception:
+            pass
+        return raw_output
 
 # Function to get current ISO timestamp
 def _utc_now_iso() -> str:
     return datetime.now().isoformat() + "Z"
+
+
+def _format_history_for_context(history: list, max_messages: int = 10) -> str:
+    """Format recent chat history (newest-first list) into a readable context block.
+
+    Includes up to max_messages most recent messages in chronological order.
+    """
+    if not history:
+        return ""
+    # Take newest-first list, keep the most recent N, then reverse to chronological
+    recent = list(reversed(history[:max_messages]))
+    lines: list[str] = []
+    for entry in recent:
+        ts = entry.get("timestamp", "")
+        if "user" in entry:
+            lines.append(f"[{ts}] User: {entry['user']}")
+        elif "system" in entry:
+            lines.append(f"[{ts}] Assistant: {entry['system']}")
+        elif "assistant" in entry:
+            lines.append(f"[{ts}] Assistant: {entry['assistant']}")
+        elif "marker" in entry:
+            # Summary cutoff marker
+            marker = entry.get("marker", "summary_marker")
+            lines.append(f"[{ts}] Marker: {marker}")
+    return "\n".join(lines)
 
 # Simulate streaming response generation
 async def _generate_streaming_response(usecase_id: str, response_text: str) -> AsyncIterator[str]:
@@ -106,13 +144,43 @@ def _run_chat_inference(usecase_id: str, user_message: str):
         logger.info(f"Starting chat inference for usecase_id={usecase_id}")
         
         # Call asset_invoker
-        asset_id = os.getenv("ASSET_ID", "5df1fa69-6218-4482-a92b-bc1c2c168e3e")
+        asset_id = os.getenv("ASSET_ID")
+        if not asset_id:
+            logger.error("ASSET_ID not configured in environment; skipping PF call")
+            raise RuntimeError("ASSET_ID not configured")
         logger.info(f"Calling asset_invoker for usecase {usecase_id} with message: {user_message}")
         
         try:
+            # Build recent chat history context (from in-memory cache if available; DB is read below when persisting)
+            recent_history = chat_storage.get(usecase_id, [])
+            formatted_history = _format_history_for_context(recent_history, max_messages=12)
+
+            # Prepend a strict JSON-only instruction to improve PF output formatting
+            strict_json_instruction = (
+                "You MUST respond with ONLY a single valid JSON object with exactly two keys: "
+                '"user_answer" (string) and "tool_call" (null or string). No text before or after the JSON. '
+                "No markdown fences."
+            )
+            context_block = (
+                "=== CONVERSATION CONTEXT ===\n" + formatted_history if formatted_history else ""
+            )
+            pf_query = (
+                f"{create_enhanced_cortexa_prompt()}\n\n{strict_json_instruction}\n\n"
+                f"{context_block}\n\nUser: {user_message}"
+            )
+
+            # Log inputs sent to the LLM (trim for console readability)
+            logger.info(
+                "PF LLM input (context chars=%d, total prompt chars=%d):\nContext Preview:\n%s\nPrompt Preview:\n%s",
+                len(context_block),
+                len(pf_query),
+                (context_block[:800] + ("..." if len(context_block) > 800 else "")),
+                (pf_query[:800] + ("..." if len(pf_query) > 800 else "")),
+            )
+
             response_text, cost, tokens = invoke_asset_with_proper_timeout(
-                asset_id_param=asset_id, 
-                query=user_message, 
+                asset_id_param=asset_id,
+                query=pf_query,
                 timeout_seconds=300
             )
             logger.info(f"Received response from asset_invoker: {response_text}...")

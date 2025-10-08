@@ -94,7 +94,9 @@ def _run_chat_inference(usecase_id: str, user_message: str):
         logger.info(f"Starting chat inference for usecase_id={usecase_id}")
         
         # Call asset_invoker
-        asset_id = os.getenv("ASSET_ID", "5df1fa69-6218-4482-a92b-bc1c2c168e3e")
+        asset_id = os.getenv("ASSET_ID")
+        if not asset_id:
+            raise RuntimeError("ASSET_ID not configured")
         logger.info(f"Calling asset_invoker for usecase {usecase_id} with message: {user_message}")
         
         try:

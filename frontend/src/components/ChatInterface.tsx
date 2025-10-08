@@ -8,6 +8,7 @@ import { PreviewPanel } from "@/components/PreviewPanel";
 import { apiGet, apiPost, API_BASE_URL } from "@/lib/utils";
 import { useSidebar } from "@/components/ui/sidebar";
 import { ChatInput, FloatingInputContainer } from "@/components/chat";
+import { OCRConfirmationModal, OCRDisplay } from "@/components/ocr";
 
 interface Message {
   id: string;
@@ -19,6 +20,7 @@ interface Message {
   };
   timestamp: Date;
   hasPreview?: boolean;
+  toolCall?: string;
 }
 
 interface UploadedFile {
@@ -46,6 +48,12 @@ export function ChatInterface({ userId, usecaseId }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
+  // OCR-related state
+  const [showOCRModal, setShowOCRModal] = useState(false);
+  const [showOCRDisplay, setShowOCRDisplay] = useState(false);
+  const [ocrExpanded, setOcrExpanded] = useState(false);
+  const [pendingOCRToolCall, setPendingOCRToolCall] = useState<any>(null);
+
   // Scroll to bottom when messages change
   const scrollToBottom = () => {
     if (messagesEndRef.current) {
@@ -62,10 +70,10 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         return;
       }
       try {
-        const statuses = await apiGet<any>(`/test/statuses/${usecaseId}`);
+        const statuses = await apiGet<any>(`/frontend/usecases/${usecaseId}/statuses`);
         if (cancelled) return;
         setStatus(statuses.status || "Completed");
-        const history = await apiGet<any[]>(`/test/chat/${usecaseId}`);
+        const history = await apiGet<any[]>(`/frontend/usecases/${usecaseId}/chat`);
         if (cancelled) return;
         
         // Sort messages by timestamp in ascending order (oldest first)
@@ -78,8 +86,45 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         const mappedMessages = sortedHistory.map((entry, idx) => {
           const ts = new Date(entry.timestamp || Date.now());
           if (entry.user !== undefined) {
-            return { id: `u-${idx}`, type: "user", content: entry.user, timestamp: ts } as Message;
+            const message: Message = { 
+              id: `u-${idx}`, 
+              type: "user", 
+              content: entry.user, 
+              timestamp: ts 
+            };
+            
+            // Add file information if available
+            if (entry.files && entry.files.length > 0) {
+              message.file = {
+                name: entry.files[0].name,
+                type: entry.files[0].type
+              };
+            }
+            
+            return message;
           }
+          
+          // Check for OCR tool call
+          if (entry.tool_call === "ocr") {
+            // Handle OCR tool call
+            const toolData = entry.tool_data || {};
+            const userResponse = toolData.user_response || "I need to perform OCR on your documents.";
+            
+            // Show the confirmation modal if this is the latest message
+            if (idx === 0) {
+              setPendingOCRToolCall(entry);
+              setShowOCRModal(true);
+            }
+            
+            return { 
+              id: `a-${idx}`, 
+              type: "assistant", 
+              content: userResponse, 
+              timestamp: ts,
+              toolCall: "ocr"
+            } as Message & {toolCall?: string};
+          }
+          
           const content = entry.system;
           // agent output contains JSON; show only user_answer if present
           let shown = content;
@@ -117,7 +162,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
     async function poll() {
       try {
         // Poll for status using the specific usecase endpoint
-        const response = await apiGet<any>(`/test/statuses/${usecaseId}`);
+        const response = await apiGet<any>(`/frontend/usecases/${usecaseId}/statuses`);
         const currentStatus = response.status || "Completed";
         setStatus(currentStatus);
         
@@ -149,7 +194,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             setTimeout(scrollToBottom, 100);
           } else {
             // Get the full chat history
-            const history = await apiGet<any[]>(`/test/chat/${usecaseId}`);
+            const history = await apiGet<any[]>(`/frontend/usecases/${usecaseId}/chat`);
             
             // Sort messages by timestamp in ascending order (oldest first)
             const sortedHistory = [...history].sort((a, b) => {
@@ -161,7 +206,22 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             const mappedMessages = sortedHistory.map((entry, idx) => {
               const ts = new Date(entry.timestamp || Date.now());
               if (entry.user !== undefined) {
-                return { id: `u-${idx}`, type: "user", content: entry.user, timestamp: ts } as Message;
+                const message: Message = { 
+                  id: `u-${idx}`, 
+                  type: "user", 
+                  content: entry.user, 
+                  timestamp: ts 
+                };
+                
+                // Add file information if available
+                if (entry.files && entry.files.length > 0) {
+                  message.file = {
+                    name: entry.files[0].name,
+                    type: entry.files[0].type
+                  };
+                }
+                
+                return message;
               }
               const content = entry.system;
               let shown = content;
@@ -199,7 +259,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
   const createNewUsecase = async () => {
     try {
       // Get the current count of chats to name this one appropriately
-      const usecases = await apiGet<any[]>(`/test/usecases`);
+      const usecases = await apiGet<any[]>(`/frontend/usecases/list`);
       const chatCount = usecases.length + 1;
       const chatName = `Chat ${chatCount}`;
       
@@ -234,17 +294,47 @@ export function ChatInterface({ userId, usecaseId }: Props) {
       type: "user",
       content: inputValue,
       timestamp: new Date(),
+      file: uploadedFiles.length > 0 ? {
+        name: uploadedFiles[0].name,
+        type: uploadedFiles[0].type
+      } : undefined,
     };
 
     setMessages(prev => [...prev, userMessage]);
     // Scroll to bottom after user message is added
     setTimeout(scrollToBottom, 100);
+    
+    const messageContent = inputValue;
+    const filesToUpload = [...uploadedFiles];
+    
     setInputValue("");
     setUploadedFiles([]);
     setIsLoading(true);
 
     try {
-      await apiPost(`/test/chat/${targetUsecaseId}`, { role: "user", content: userMessage.content });
+      // Upload files if any
+      if (filesToUpload.length > 0) {
+        const formData = new FormData();
+        filesToUpload.forEach(file => {
+          formData.append('files', file.file);
+        });
+        formData.append('email', 'abir.dey@intellectdesign.com');
+        formData.append('usecase_id', targetUsecaseId);
+
+        await apiPost('/files/upload_file', formData);
+      }
+
+      // Send chat message with file information if available
+      const chatPayload: any = { role: "user", content: messageContent };
+      if (filesToUpload.length > 0) {
+        chatPayload.files = filesToUpload.map(file => ({
+          name: file.name,
+          type: file.type,
+          size: file.file.size
+        }));
+      }
+      
+      await apiPost(`/usecases/${targetUsecaseId}/chat`, chatPayload);
       setStatus("In Progress");
       setWaitingForResponse(true); // Start waiting for response
       
@@ -343,6 +433,36 @@ export function ChatInterface({ userId, usecaseId }: Props) {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  // OCR-related handlers
+  const handleOCRConfirm = async (selectedFileId: string) => {
+    try {
+      setShowOCRModal(false);
+      setShowOCRDisplay(true);
+      
+      // Start OCR processing for the selected file
+      await apiPost(`/files/ocr/${selectedFileId}/start`, {});
+      console.log("OCR processing started for file:", selectedFileId);
+      
+    } catch (error) {
+      console.error("Error starting OCR:", error);
+      // Still show the display in case OCR was already running
+    }
+  };
+
+  const handleOCRModalClose = () => {
+    setShowOCRModal(false);
+    setPendingOCRToolCall(null);
+  };
+
+  const handleOCRDisplayClose = () => {
+    setShowOCRDisplay(false);
+    setOcrExpanded(false);
+  };
+
+  const handleOCRDisplayToggleExpand = () => {
+    setOcrExpanded(!ocrExpanded);
   };
 
   // Get sidebar state to adjust layout
@@ -489,7 +609,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
       </div>
 
       {/* Preview Panel */}
-      {previewOpen && (
+      {previewOpen && !ocrExpanded && (
         <div className="w-full md:w-2/5 h-full fixed md:relative right-0 top-0 z-40 md:z-auto">
           <PreviewPanel
             content={previewContent}
@@ -497,6 +617,33 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             onClose={() => setPreviewOpen(false)}
           />
         </div>
+      )}
+
+      {/* OCR Display Panel */}
+      {showOCRDisplay && usecaseId && (
+        <div className={`
+          ${ocrExpanded 
+            ? 'fixed top-0 right-0 w-full h-full z-50' 
+            : 'w-full md:w-2/5 h-full fixed md:relative right-0 top-0 z-40 md:z-auto'
+          }
+        `}>
+          <OCRDisplay
+            usecaseId={usecaseId}
+            isExpanded={ocrExpanded}
+            onToggleExpand={handleOCRDisplayToggleExpand}
+            onClose={handleOCRDisplayClose}
+          />
+        </div>
+      )}
+
+      {/* OCR Confirmation Modal */}
+      {showOCRModal && usecaseId && (
+        <OCRConfirmationModal
+          isOpen={showOCRModal}
+          onClose={handleOCRModalClose}
+          onConfirm={handleOCRConfirm}
+          usecaseId={usecaseId}
+        />
       )}
     </div>
   );

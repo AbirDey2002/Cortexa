@@ -13,12 +13,31 @@ export async function apiGet<T>(path: string): Promise<T> {
   return res.json();
 }
 
-export async function apiPost<T>(path: string, body?: any): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+export async function apiPost<T>(path: string, body?: any, headers?: Record<string, string>): Promise<T> {
+  const isFormData = body instanceof FormData;
+  
+  const config: RequestInit = {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+    body: isFormData ? body : (body ? JSON.stringify(body) : undefined),
+  };
+
+  // Set headers if not FormData (FormData sets its own Content-Type with boundary)
+  if (!isFormData) {
+    config.headers = {
+      'Content-Type': 'application/json',
+      ...headers
+    };
+  } else if (headers) {
+    // For FormData, only add non-Content-Type headers
+    const nonContentTypeHeaders = Object.fromEntries(
+      Object.entries(headers).filter(([key]) => key.toLowerCase() !== 'content-type')
+    );
+    if (Object.keys(nonContentTypeHeaders).length > 0) {
+      config.headers = nonContentTypeHeaders;
+    }
+  }
+
+  const res = await fetch(`${API_BASE_URL}${path}`, config);
   if (!res.ok) throw new Error(`POST ${path} failed`);
   return res.json();
 }

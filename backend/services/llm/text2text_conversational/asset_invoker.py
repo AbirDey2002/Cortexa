@@ -385,12 +385,13 @@ def invoke_asset_with_proper_timeout(asset_id_param=None, query=None, timeout_se
 
 
 if __name__ == "__main__":
-    # Example usage when script is run directly
-    test_asset_id = "5df1fa69-6218-4482-a92b-bc1c2c168e3e"
+    # Example usage when script is run directly (reads from env only)
+    test_asset_id = os.getenv("ASSET_ID", "")
     test_query = "Hello! What can you help me with?"
-    
-    print("Invoking asset...")
-    response, cost, tokens = invoke_asset(test_asset_id, test_query)
-    print(f"\nResponse: {response}")
-    print(f"Cost: {cost}")
-    # print(f"Tokens: {tokens}")  # Disabled to prevent sensitive info exposure
+    if not test_asset_id:
+        print("ASSET_ID not configured in environment.")
+    else:
+        print("Invoking asset...")
+        response, cost, tokens = invoke_asset(test_asset_id, test_query)
+        print(f"\nResponse: {response}")
+        print(f"Cost: {cost}")

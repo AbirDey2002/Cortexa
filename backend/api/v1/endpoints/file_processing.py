@@ -92,6 +92,7 @@ async def upload_file(background_tasks: BackgroundTasks,
                       files: list[UploadFile] = File(...),
                       email: str = Form(...),
                       usecase_id: UUID = Form(...),
+                      start_ocr: bool = Form(False),
                       db_session: Session = Depends(get_db)):
     """
     Upload multiple files and store their metadata in the database.
@@ -152,25 +153,29 @@ async def upload_file(background_tasks: BackgroundTasks,
             logger.info("Committing metadata to database")
             db.commit()
 
-            logger.info("Preparing OCR data for background processing")
-            # Extract necessary data before session closes
-            ocr_data = [(metadata.file_link, metadata.file_id) for metadata in file_metadata_list]
-            
-            logger.info("Adding OCR processing background task")
-            # Add OCR processing background task
-            background_tasks.add_task(
-                run_all_ocr_batches, 
-                usecase_id,
-                ocr_data, 
-                ocr_batch_size,
-                PFImageToTextConfigs.api_key,
-                PFImageToTextConfigs.username,
-                PFImageToTextConfigs.password,
-                PFImageToTextConfigs.asset_id,
-                OCRServiceConfigs.NUM_WORKERS,
-                OCRServiceConfigs.BATCH_SIZE,
-                OCRServiceConfigs.MAX_RETRIES
-            )
+            # Only start OCR if explicitly requested
+            if start_ocr:
+                logger.info("Preparing OCR data for background processing")
+                # Extract necessary data before session closes
+                ocr_data = [(metadata.file_link, metadata.file_id) for metadata in file_metadata_list]
+                
+                logger.info("Adding OCR processing background task")
+                # Add OCR processing background task
+                background_tasks.add_task(
+                    run_all_ocr_batches, 
+                    usecase_id,
+                    ocr_data, 
+                    ocr_batch_size,
+                    PFImageToTextConfigs.api_key,
+                    PFImageToTextConfigs.username,
+                    PFImageToTextConfigs.password,
+                    PFImageToTextConfigs.asset_id,
+                    OCRServiceConfigs.NUM_WORKERS,
+                    OCRServiceConfigs.BATCH_SIZE,
+                    OCRServiceConfigs.MAX_RETRIES
+                )
+            else:
+                logger.info("Files uploaded successfully, OCR not started (start_ocr=False)")
 
             # Refresh metadata objects
             for metadata in file_metadata_list:
@@ -254,6 +259,191 @@ async def get_usecase_file_status(
             raise HTTPException(
                 status_code=500, 
                 detail=f"Error fetching workflow status for usecase {usecase_id}: {str(e)}"
+            )
+
+
+@router.get("/ocr/{usecase_id}/results")
+async def get_ocr_results(
+    usecase_id: UUID,
+    db_session: Session = Depends(get_db)
+):
+    """
+    Get OCR results for all files in a specific usecase.
+    
+    Args:
+        usecase_id (UUID): ID of the usecase
+        db_session (Session): Database session dependency
+        
+    Returns:
+        dict: OCR results including progress and extracted text for each file
+    """
+    with db_session as db:
+        try:
+            # Get all files for the usecase
+            files = db.query(FileMetadata).filter(FileMetadata.usecase_id == usecase_id).all()
+            
+            if not files:
+                return {
+                    "usecase_id": str(usecase_id),
+                    "total_files": 0,
+                    "files": [],
+                    "overall_status": "no_files"
+                }
+            
+            file_results = []
+            total_pages = 0
+            completed_pages = 0
+            error_pages = 0
+            
+            for file_metadata in files:
+                # Get OCR info for the file
+                ocr_info = db.query(OCRInfo).filter(
+                    OCRInfo.file_id == file_metadata.file_id
+                ).first()
+                
+                # Get OCR outputs for the file
+                ocr_outputs = db.query(OCROutputs).filter(
+                    OCROutputs.file_id == file_metadata.file_id
+                ).order_by(OCROutputs.page_number).all()
+                
+                # Get workflow tracker
+                workflow_tracker = db.query(FileWorkflowTracker).filter(
+                    FileWorkflowTracker.file_id == file_metadata.file_id
+                ).first()
+                
+                file_total_pages = ocr_info.total_pages if ocr_info else 0
+                file_completed_pages = ocr_info.completed_pages if ocr_info else 0
+                file_error_pages = ocr_info.error_pages if ocr_info else 0
+                
+                total_pages += file_total_pages
+                completed_pages += file_completed_pages
+                error_pages += file_error_pages
+                
+                # Determine file status
+                file_status = "not_started"
+                if workflow_tracker:
+                    if workflow_tracker.text_extraction == "Completed":
+                        file_status = "completed"
+                    elif workflow_tracker.text_extraction == "In Progress":
+                        file_status = "in_progress"
+                    elif workflow_tracker.text_extraction == "Failed":
+                        file_status = "failed"
+                
+                # Format OCR outputs
+                pages_data = []
+                for output in ocr_outputs:
+                    pages_data.append({
+                        "page_number": output.page_number,
+                        "text": output.page_text,
+                        "is_completed": output.is_completed,
+                        "error_msg": output.error_msg,
+                        "created_at": output.created_at.isoformat() if output.created_at else None
+                    })
+                
+                file_results.append({
+                    "file_id": str(file_metadata.file_id),
+                    "file_name": file_metadata.file_name,
+                    "file_link": file_metadata.file_link,
+                    "status": file_status,
+                    "total_pages": file_total_pages,
+                    "completed_pages": file_completed_pages,
+                    "error_pages": file_error_pages,
+                    "progress_percentage": (file_completed_pages / file_total_pages * 100) if file_total_pages > 0 else 0,
+                    "pages": pages_data,
+                    "created_at": file_metadata.created_at.isoformat() if file_metadata.created_at else None
+                })
+            
+            # Determine overall status
+            overall_status = "not_started"
+            if total_pages > 0:
+                if completed_pages == total_pages:
+                    overall_status = "completed"
+                elif completed_pages > 0:
+                    overall_status = "in_progress"
+                elif error_pages > 0:
+                    overall_status = "partial_error"
+            
+            return {
+                "usecase_id": str(usecase_id),
+                "total_files": len(files),
+                "total_pages": total_pages,
+                "completed_pages": completed_pages,
+                "error_pages": error_pages,
+                "overall_progress_percentage": (completed_pages / total_pages * 100) if total_pages > 0 else 0,
+                "overall_status": overall_status,
+                "files": file_results,
+                "last_updated": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching OCR results for usecase {usecase_id}: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Error fetching OCR results for usecase {usecase_id}: {str(e)}"
+            )
+
+
+@router.post("/ocr/{file_id}/start")
+async def start_ocr_for_file(
+    file_id: UUID,
+    background_tasks: BackgroundTasks,
+    db_session: Session = Depends(get_db)
+):
+    """
+    Start OCR processing for a specific file.
+    
+    Args:
+        file_id (UUID): ID of the file to process
+        background_tasks (BackgroundTasks): Background tasks handler
+        db_session (Session): Database session dependency
+        
+    Returns:
+        dict: Status response
+    """
+    with db_session as db:
+        try:
+            # Get file metadata
+            file_metadata = db.query(FileMetadata).filter(
+                FileMetadata.file_id == file_id
+            ).first()
+            
+            if not file_metadata:
+                raise HTTPException(status_code=404, detail="File not found")
+            
+            logger.info(f"Starting OCR for file: {file_metadata.file_name} ({file_id})")
+            
+            # Prepare OCR data for this single file
+            ocr_data = [(file_metadata.file_link, file_metadata.file_id)]
+            
+            # Start OCR processing as background task
+            background_tasks.add_task(
+                run_all_ocr_batches, 
+                file_metadata.usecase_id,
+                ocr_data, 
+                1,  # Process single file
+                PFImageToTextConfigs.api_key,
+                PFImageToTextConfigs.username,
+                PFImageToTextConfigs.password,
+                PFImageToTextConfigs.asset_id,
+                OCRServiceConfigs.NUM_WORKERS,
+                OCRServiceConfigs.BATCH_SIZE,
+                OCRServiceConfigs.MAX_RETRIES
+            )
+            
+            logger.info(f"OCR processing started for file: {file_metadata.file_name}")
+            
+            return {
+                "status": "started",
+                "file_id": str(file_id),
+                "file_name": file_metadata.file_name,
+                "message": "OCR processing started successfully"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error starting OCR for file {file_id}: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Error starting OCR for file {file_id}: {str(e)}"
             )
 
 
