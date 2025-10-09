@@ -3,7 +3,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { TopNavigation } from "@/components/TopNavigation";
 import { ChatInterface } from "@/components/ChatInterface";
-import { apiGet, apiPost } from "@/lib/utils";
+import { apiGet } from "@/lib/utils";
 
 interface LayoutProps {
   children?: React.ReactNode;
@@ -21,7 +21,7 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange }: LayoutPr
     (async () => {
       try {
         // Try to get existing usecases first
-        const usecases = await apiGet<any[]>("/test/usecases");
+        const usecases = await apiGet<any[]>("/frontend/usecases/list");
         
         // Set the user ID if we have usecases
         if (usecases && usecases.length > 0) {

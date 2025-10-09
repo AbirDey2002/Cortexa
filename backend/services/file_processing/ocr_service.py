@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 import requests
 import fitz
 from models.usecase.usecase import UsecaseMetadata
-from services.llm.pf_image2text_automation.asset_invoker import AssetInvoker
+# PF OCR invoker removed
 from deps import get_db
 from models.file_processing.file_workflow_tracker import FileWorkflowTracker
 from models.file_processing.ocr_records import OCROutputs, OCRInfo
@@ -33,7 +33,7 @@ class OCRPipeline:
         self.num_workers = num_workers
         self.batch_size = batch_size
         self.max_retries = max_retries
-        self.asset_invoker = AssetInvoker(api_key, username, password, asset_id)
+        raise RuntimeError("PF OCR invoker removed from codebase")
 
     def download_blob(self, blob_url):
         """Download file from blob URL with detailed logging"""
@@ -132,9 +132,7 @@ class OCRPipeline:
                 status_list[os.path.basename(fp)] = "in-progress"
             async with semaphore:
                 try:
-                    logger.info(f"Invoking Purple Fabric asset for batch: {batch_files}")
-                    result = await self.asset_invoker.invoke_asset(batch)
-                    logger.info(f"Successfully received result from Purple Fabric for batch: {batch_files}")
+                    raise RuntimeError("PF OCR path removed; no OCR invoker available")
                     db = next(get_db())
                     try:
                         for j, fp in enumerate(batch):

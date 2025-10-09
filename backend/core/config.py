@@ -1,7 +1,6 @@
 from pydantic_settings import BaseSettings
 from .env_config import (
     get_database_config,
-    get_pf_config,
     get_azure_config,
     get_smtp_config,
     get_auth0_config,
@@ -43,7 +42,6 @@ class OCRServiceConfigs:
 
 class Settings(BaseSettings):
     _db_config = get_database_config()
-    _pf_config = get_pf_config()
     _azure_config = get_azure_config()
     _smtp_config = get_smtp_config()
     _auth0_config = get_auth0_config()
@@ -56,7 +54,7 @@ class Settings(BaseSettings):
     DB_NAME: str = _db_config["DB_NAME"]
     DB_SSL_MODE: str = _db_config.get("DB_SSL_MODE", "disable")
 
-    PF_BASE_URL: str = _pf_config.get("PF_BASE_URL", "")
+    # PF removed
 
     AZURE_SUBSCRIPTION_ID: str = _azure_config.get("AZURE_SUBSCRIPTION_ID", "")
     AZURE_CONTAINER_NAME: str = _azure_config.get("AZURE_CONTAINER_NAME", "uploads")

@@ -46,7 +46,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
   const fetchUsecases = async () => {
     if (!userId) return;
     try {
-      const usecases = await apiGet<UsecaseListItem[]>(`/test/usecases`);
+      const usecases = await apiGet<UsecaseListItem[]>(`/frontend/usecases/list`);
       
       // Sort usecases by updated_at timestamp (most recent first)
       const sortedUsecases = [...usecases].sort((a, b) => {
@@ -128,7 +128,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
       const record = await apiPost<UsecaseListItem>("/usecases", payload);
       
       // Refresh the list of usecases after creating a new one
-      const updatedUsecases = await apiGet<UsecaseListItem[]>(`/test/usecases`);
+      const updatedUsecases = await apiGet<UsecaseListItem[]>(`/frontend/usecases/list`);
       setUsecases(updatedUsecases);
       
       // Select the new usecase

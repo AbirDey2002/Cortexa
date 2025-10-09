@@ -73,6 +73,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         const statuses = await apiGet<any>(`/frontend/usecases/${usecaseId}/statuses`);
         if (cancelled) return;
         setStatus(statuses.status || "Completed");
+        // Fetch unified chat history (Gemini-backed backend writes to same store)
         const history = await apiGet<any[]>(`/frontend/usecases/${usecaseId}/chat`);
         if (cancelled) return;
         
@@ -334,7 +335,8 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         }));
       }
       
-      await apiPost(`/usecases/${targetUsecaseId}/chat`, chatPayload);
+      // Route chat to Gemini conversation endpoint (not PF)
+      await apiPost(`/usecases/${targetUsecaseId}/gemini-chat`, chatPayload);
       setStatus("In Progress");
       setWaitingForResponse(true); // Start waiting for response
       

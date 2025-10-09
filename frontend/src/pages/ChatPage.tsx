@@ -43,7 +43,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
   useEffect(() => {
     (async () => {
       try {
-        const usecases = await apiGet<any[]>("/test/usecases");
+        const usecases = await apiGet<any[]>("/frontend/usecases/list");
         
         if (usecases && usecases.length > 0) {
           setUserId(usecases[0].user_id);
@@ -74,10 +74,10 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
         return;
       }
       try {
-        const statuses = await apiGet<any>(`/test/statuses/${activeUsecaseId}`);
+        const statuses = await apiGet<any>(`/frontend/usecases/${activeUsecaseId}/statuses`);
         if (cancelled) return;
         setStatus(statuses.status || "Completed");
-        const history = await apiGet<any[]>(`/test/chat/${activeUsecaseId}`);
+        const history = await apiGet<any[]>(`/frontend/usecases/${activeUsecaseId}/chat`);
         if (cancelled) return;
         
         // Sort messages by timestamp in ascending order (oldest first)
@@ -97,7 +97,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
             // agent output contains JSON; show only user_answer if present
             let shown = content;
             try {
-              const m = content.match(/```json\\s*([\s\S]*?)\\s*```/i);
+              const m = content.match(/```json\s*([\s\S]*?)\s*```/i);
               const jsonText = m ? m[1] : content;
               const obj = JSON.parse(jsonText);
               if (obj && obj.user_answer) shown = obj.user_answer;
@@ -124,7 +124,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
     
     async function poll() {
       try {
-        const response = await apiGet<any>(`/test/statuses/${activeUsecaseId}`);
+        const response = await apiGet<any>(`/frontend/usecases/${activeUsecaseId}/statuses`);
         const currentStatus = response.status || "Completed";
         setStatus(currentStatus);
         
@@ -147,7 +147,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
             
             setMessages(prev => [...prev, systemMessage]);
           } else {
-            const history = await apiGet<any[]>(`/test/chat/${activeUsecaseId}`);
+            const history = await apiGet<any[]>(`/frontend/usecases/${activeUsecaseId}/chat`);
             
             const sortedHistory = [...history].sort((a, b) => {
               const tsA = new Date(a.timestamp || 0).getTime();
@@ -164,7 +164,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
                 const content = entry.system;
                 let shown = content;
                 try {
-                  const m = content.match(/```json\\s*([\s\S]*?)\\s*```/i);
+                  const m = content.match(/```json\s*([\s\S]*?)\s*```/i);
                   const jsonText = m ? m[1] : content;
                   const obj = JSON.parse(jsonText);
                   if (obj && obj.user_answer) shown = obj.user_answer;
@@ -204,7 +204,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
     setIsLoading(true);
 
     try {
-      await apiPost(`/test/chat/${activeUsecaseId}`, { role: "user", content: userMessage.content });
+      await apiPost(`/usecases/${activeUsecaseId}/gemini-chat`, { role: "user", content: userMessage.content });
       setStatus("In Progress");
       setWaitingForResponse(true);
       

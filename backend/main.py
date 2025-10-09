@@ -19,7 +19,6 @@ from typing import AsyncIterator, Dict, List, Optional
 from core.logging_config import setup_logging
 import os
 from pathlib import Path
-from services.llm.text2text_conversational.asset_invoker import invoke_asset_with_proper_timeout
 from services.llm.gemini_conversational.json_output_parser import (
     parse_llm_response,
     create_enhanced_cortexa_prompt,
@@ -133,123 +132,12 @@ async def _generate_streaming_response(usecase_id: str, response_text: str) -> A
 
 # Background task to process messages with LLM
 def _run_chat_inference(usecase_id: str, user_message: str):
-    try:
-        # Initialize chat history if it doesn't exist
-        if usecase_id not in chat_storage:
-            chat_storage[usecase_id] = []
-            
-        # Set status to In Progress
-        chat_storage[f"{usecase_id}_status"] = "In Progress"
-        
-        logger.info(f"Starting chat inference for usecase_id={usecase_id}")
-        
-        # Call asset_invoker
-        asset_id = os.getenv("ASSET_ID")
-        if not asset_id:
-            logger.error("ASSET_ID not configured in environment; skipping PF call")
-            raise RuntimeError("ASSET_ID not configured")
-        logger.info(f"Calling asset_invoker for usecase {usecase_id} with message: {user_message}")
-        
-        try:
-            # Build recent chat history context (from in-memory cache if available; DB is read below when persisting)
-            recent_history = chat_storage.get(usecase_id, [])
-            formatted_history = _format_history_for_context(recent_history, max_messages=12)
-
-            # Prepend a strict JSON-only instruction to improve PF output formatting
-            strict_json_instruction = (
-                "You MUST respond with ONLY a single valid JSON object with exactly two keys: "
-                '"user_answer" (string) and "tool_call" (null or string). No text before or after the JSON. '
-                "No markdown fences."
-            )
-            context_block = (
-                "=== CONVERSATION CONTEXT ===\n" + formatted_history if formatted_history else ""
-            )
-            pf_query = (
-                f"{create_enhanced_cortexa_prompt()}\n\n{strict_json_instruction}\n\n"
-                f"{context_block}\n\nUser: {user_message}"
-            )
-
-            # Log inputs sent to the LLM (trim for console readability)
-            logger.info(
-                "PF LLM input (context chars=%d, total prompt chars=%d):\nContext Preview:\n%s\nPrompt Preview:\n%s",
-                len(context_block),
-                len(pf_query),
-                (context_block[:800] + ("..." if len(context_block) > 800 else "")),
-                (pf_query[:800] + ("..." if len(pf_query) > 800 else "")),
-            )
-
-            response_text, cost, tokens = invoke_asset_with_proper_timeout(
-                asset_id_param=asset_id,
-                query=pf_query,
-                timeout_seconds=300
-            )
-            logger.info(f"Received response from asset_invoker: {response_text}...")
-            
-            # Parse the response
-            assistant_text = _parse_agent_output(response_text)
-            
-            # Store the full response for streaming
-            streaming_responses[usecase_id] = assistant_text
-            
-            # Add system response to chat history
-            system_entry = {"system": assistant_text, "timestamp": _utc_now_iso()}
-            chat_storage[usecase_id].insert(0, system_entry)
-            
-            # Update chat history and timestamp in the database
-            try:
-                from sqlalchemy import text
-                from db.session import get_db_context
-                
-                with get_db_context() as db:
-                    # First get current chat history
-                    select_query = text("""
-                        SELECT chat_history 
-                        FROM usecase_metadata 
-                        WHERE usecase_id = :usecase_id AND is_deleted = false
-                    """)
-                    
-                    result = db.execute(select_query, {"usecase_id": usecase_id}).fetchone()
-                    
-                    # Initialize chat history or use existing
-                    db_chat_history = result[0] if result and result[0] else []
-                    
-                    # Add new message to the beginning
-                    db_chat_history.insert(0, system_entry)
-                    
-                    # Update in database - convert chat history to JSON string
-                    import json
-                    update_query = text("""
-                        UPDATE usecase_metadata 
-                        SET chat_history = :chat_history, updated_at = NOW(), status = 'Completed'
-                        WHERE usecase_id = :usecase_id AND is_deleted = false
-                    """)
-                    
-                    db.execute(update_query, {"usecase_id": usecase_id, "chat_history": json.dumps(db_chat_history)})
-                    db.commit()
-                    logger.info(f"Updated chat history and timestamp in database for usecase_id={usecase_id}")
-            except Exception as e:
-                logger.error(f"Error updating chat history and timestamp in database: {e}")
-            
-        except Exception as e:
-            logger.error(f"Error in asset invocation: {e}")
-            # Add error message to chat history
-            error_entry = {"system": f"Error: {e}", "timestamp": _utc_now_iso()}
-            chat_storage[usecase_id].insert(0, error_entry)
-            streaming_responses[usecase_id] = f"Error: {e}"
-        
-        # Set status to Completed
-        chat_storage[f"{usecase_id}_status"] = "Completed"
-        logger.info(f"Completed chat inference for usecase_id={usecase_id}")
-        
-    except Exception as e:
-        logger.error(f"Error in chat inference: {e}")
-        # Add error message to chat history
-        if usecase_id not in chat_storage:
-            chat_storage[usecase_id] = []
-        error_entry = {"system": f"Error: {e}", "timestamp": _utc_now_iso()}
-        chat_storage[usecase_id].insert(0, error_entry)
-        chat_storage[f"{usecase_id}_status"] = "Completed"
-        streaming_responses[usecase_id] = f"Error: {e}"
+    # PF path removed; stub retained for legacy test routes
+    logger.info("PF chat inference path removed; ignoring request usecase_id=%s", usecase_id)
+    chat_storage.setdefault(usecase_id, [])
+    system_entry = {"system": "PF chat path removed.", "timestamp": _utc_now_iso()}
+    chat_storage[usecase_id].insert(0, system_entry)
+    chat_storage[f"{usecase_id}_status"] = "Completed"
 
 class ChatMessage(BaseModel):
     role: str

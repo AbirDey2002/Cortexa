@@ -42,18 +42,7 @@ def get_azure_config() -> dict:
     }
 
 
-def get_pf_config() -> dict:
-    return {
-        "PF_BASE_URL": os.getenv("PF_BASE_URL", ""),
-        "PF_PROFILES": os.getenv("PF_PROFILES", "{}"),
-        "PF_USERNAME": os.getenv("PF_USERNAME", ""),
-        "PF_PASSWORD": os.getenv("PF_PASSWORD", ""),
-        "ASSET_ID": os.getenv("ASSET_ID", ""),
-        "API_KEY": os.getenv("API_KEY", ""),
-        "PF_USER_ID": os.getenv("PF_USER_ID", ""),
-        "PF_API_KEY": os.getenv("PF_API_KEY", ""),
-        "PF_TENANT_ID": os.getenv("PF_TENANT_ID", ""),
-    }
+# PF configuration removed from codebase
 
 
 def get_smtp_config() -> dict:

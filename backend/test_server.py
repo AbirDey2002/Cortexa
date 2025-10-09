@@ -11,7 +11,7 @@ import asyncio
 import os
 import logging
 from typing import AsyncIterator, Dict, List, Optional
-from services.llm.text2text_conversational.asset_invoker import invoke_asset_with_proper_timeout
+# PF integration removed from test server
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -83,60 +83,12 @@ async def _generate_streaming_response(usecase_id: str, response_text: str) -> A
 
 # Background task to process messages with LLM
 def _run_chat_inference(usecase_id: str, user_message: str):
-    try:
-        # Initialize chat history if it doesn't exist
-        if usecase_id not in chat_storage:
-            chat_storage[usecase_id] = []
-            
-        # Set status to In Progress
-        chat_storage[f"{usecase_id}_status"] = "In Progress"
-        
-        logger.info(f"Starting chat inference for usecase_id={usecase_id}")
-        
-        # Call asset_invoker
-        asset_id = os.getenv("ASSET_ID")
-        if not asset_id:
-            raise RuntimeError("ASSET_ID not configured")
-        logger.info(f"Calling asset_invoker for usecase {usecase_id} with message: {user_message}")
-        
-        try:
-            response_text, cost, tokens = invoke_asset_with_proper_timeout(
-                asset_id_param=asset_id, 
-                query=user_message, 
-                timeout_seconds=300
-            )
-            logger.info(f"Received response from asset_invoker: {response_text[:100]}...")
-            
-            # Parse the response
-            assistant_text = _parse_agent_output(response_text)
-            
-            # Store the full response for streaming
-            streaming_responses[usecase_id] = assistant_text
-            
-            # Add system response to chat history
-            system_entry = {"system": assistant_text, "timestamp": _utc_now_iso()}
-            chat_storage[usecase_id].insert(0, system_entry)
-            
-        except Exception as e:
-            logger.error(f"Error in asset invocation: {e}")
-            # Add error message to chat history
-            error_entry = {"system": f"Error: {e}", "timestamp": _utc_now_iso()}
-            chat_storage[usecase_id].insert(0, error_entry)
-            streaming_responses[usecase_id] = f"Error: {e}"
-        
-        # Set status to Completed
-        chat_storage[f"{usecase_id}_status"] = "Completed"
-        logger.info(f"Completed chat inference for usecase_id={usecase_id}")
-        
-    except Exception as e:
-        logger.error(f"Error in chat inference: {e}")
-        # Add error message to chat history
-        if usecase_id not in chat_storage:
-            chat_storage[usecase_id] = []
-        error_entry = {"system": f"Error: {e}", "timestamp": _utc_now_iso()}
-        chat_storage[usecase_id].insert(0, error_entry)
-        chat_storage[f"{usecase_id}_status"] = "Completed"
-        streaming_responses[usecase_id] = f"Error: {e}"
+    logger.info("PF test chat path removed; ignoring request usecase_id=%s", usecase_id)
+    chat_storage.setdefault(usecase_id, [])
+    system_entry = {"system": "PF test path removed.", "timestamp": _utc_now_iso()}
+    chat_storage[usecase_id].insert(0, system_entry)
+    streaming_responses[usecase_id] = system_entry["system"]
+    chat_storage[f"{usecase_id}_status"] = "Completed"
 
 class ChatMessage(BaseModel):
     role: str
