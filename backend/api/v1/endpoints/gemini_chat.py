@@ -9,6 +9,10 @@ import os
 import hashlib
 
 from deps import get_db
+from models.file_processing.file_metadata import FileMetadata
+from models.file_processing.ocr_records import OCRInfo, OCROutputs
+from services.file_processing.pdf_text_extractor import download_file_to_bytes, extract_pdf_text, to_markdown, extract_pdf_markdown
+from core.config import OCRServiceConfigs
 from db.session import get_db_context
 from models.usecase.usecase import UsecaseMetadata
 from models.user.user import User
@@ -55,6 +59,31 @@ gemini_response_chunks: dict[str, list[str]] = {}
 GEMINI_API_KEY = get_env_variable("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+
+
+def _get_usecase_documents_markdown(db: Session, usecase_id: uuid.UUID) -> tuple[list[dict], str]:
+    """Build list of files with markdown and a combined markdown string from DB (no HTTP)."""
+    files = db.query(FileMetadata).filter(
+        FileMetadata.usecase_id == usecase_id,
+        FileMetadata.is_deleted == False,
+    ).order_by(FileMetadata.created_at.asc()).all()
+    result_files: list[dict] = []
+    combined_parts: list[str] = []
+    for f in files:
+        outputs = db.query(OCROutputs).filter(
+            OCROutputs.file_id == f.file_id,
+            OCROutputs.is_deleted == False,
+        ).order_by(OCROutputs.page_number.asc()).all()
+        md = "\n".join([(o.page_text or "") for o in outputs])
+        result_files.append({
+            "file_id": str(f.file_id),
+            "file_name": f.file_name,
+            "markdown": md,
+        })
+        if md.strip():
+            combined_parts.append(f"## {f.file_name}\n\n{md}\n")
+    combined_markdown = "\n".join(combined_parts).strip()
+    return result_files, combined_markdown
 
 async def _generate_gemini_streaming_response(usecase_id: str, response_text: str):
     # Clear any previous chunks
@@ -187,11 +216,55 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, ti
                     assistant_text = resp.text or ""
                     gemini_streaming_responses[str(usecase_id)] = assistant_text
 
-                # Add system response to the updated chat history
+                # First pass logging
+                try:
+                    logger.info(
+                        "Chatbot response chars for usecase_id=%s: %d",
+                        str(usecase_id),
+                        len(assistant_text or ""),
+                    )
+                    if OCRServiceConfigs.LOG_OCR_TEXT and assistant_text:
+                        snippet = assistant_text.strip()
+                        max_len = OCRServiceConfigs.OCR_TEXT_LOG_MAX_LENGTH
+                        if len(snippet) > max_len:
+                            snippet = snippet[:max_len] + "... [TRUNCATED]"
+                        logger.info("Chatbot response (snippet):\n%s", snippet if snippet else "[EMPTY]")
+                except Exception:
+                    pass
+
+                # Tool-call handling (OCR)
+                is_tool, tool_type, parsed = _check_for_tool_call_gemini(assistant_text)
+                if is_tool and tool_type == "ocr":
+                    logger.info("Tool call 'ocr' detected; building documents markdown for usecase_id=%s", str(usecase_id))
+                    files_list, combined_markdown = _get_usecase_documents_markdown(db, usecase_id)
+                    logger.info(
+                        "Docs for OCR: files=%d, combined_markdown_chars=%d",
+                        len(files_list), len(combined_markdown)
+                    )
+                    gemini_streaming_responses[str(usecase_id)] = "Analyzing documents...\n"
+
+                    # Re-invoke with documents
+                    context_with_docs = context + "\n\nDocument details (Markdown):\n" + combined_markdown[:60000]
+                    final_text = ""
+                    try:
+                        try:
+                            stream2 = model.generate_content(context_with_docs, stream=True)
+                            for chunk in stream2:
+                                if hasattr(chunk, "text") and chunk.text:
+                                    final_text += chunk.text
+                                    gemini_streaming_responses[str(usecase_id)] = final_text
+                        except Exception:
+                            resp2 = model.generate_content(context_with_docs)
+                            final_text = resp2.text or ""
+                            gemini_streaming_responses[str(usecase_id)] = final_text
+                        assistant_text = final_text
+                    except Exception as e:
+                        logger.exception("Second-pass generation with documents failed: %s", e)
+
+                # Persist only final text
                 system_entry = {"system": assistant_text, "timestamp": _utc_now_iso()}
                 updated_history = [system_entry] + (updated_history or [])
 
-                # Update the record with new history and summary
                 record.chat_history = updated_history
                 record.chat_summary = updated_summary
 
@@ -251,6 +324,110 @@ async def append_gemini_chat_message(usecase_id: uuid.UUID, payload: ChatMessage
     record.chat_history = history
     record.status = "In Progress"
     db.commit()
+
+    # Handle uploaded files: ensure FileMetadata rows and store extracted PDF text
+    try:
+        if payload.files:
+            # Resolve user_id from usecase record
+            user_id = record.user_id
+            usecase_uuid = record.usecase_id
+
+            resolved_files: list[FileMetadata] = []
+            for f in payload.files:
+                file_name = str(f.get("name") or "").strip()
+                if not file_name:
+                    continue
+                # Try to find existing file metadata by usecase and name
+                fm = db.query(FileMetadata).filter(
+                    FileMetadata.usecase_id == usecase_uuid,
+                    FileMetadata.file_name == file_name,
+                    FileMetadata.is_deleted == False,
+                ).first()
+                if not fm:
+                    # Construct local link fallback
+                    file_link = f"/uploads/{file_name}"
+                    fm = FileMetadata(
+                        file_name=file_name,
+                        file_link=file_link,
+                        user_id=user_id,
+                        usecase_id=usecase_uuid,
+                    )
+                    db.add(fm)
+                    db.flush()  # get file_id
+                resolved_files.append(fm)
+
+            # For each resolved file, extract text and upsert OCR rows (idempotent)
+            for fm in resolved_files:
+                # Download/read file bytes
+                bytes_data = download_file_to_bytes(fm.file_link)
+                if not bytes_data:
+                    logging.getLogger(__name__).warning(
+                        "No bytes read for file_link=%s (file_name=%s)", fm.file_link, fm.file_name
+                    )
+                # Prefer robust markdown extractor
+                md_text = extract_pdf_markdown(bytes_data)
+                extractor_used = "pdfplumber"
+                if not md_text:
+                    text = extract_pdf_text(bytes_data)
+                    md_text = to_markdown(text)
+                    extractor_used = "fallback"
+                # Ensure fenced code block formatting if text still lacks markdown cues
+                if md_text and not any(sym in md_text for sym in ("# ", "- ", "1. ")):
+                    # Wrap in a paragraph to make it explicit markdown content
+                    md_text = md_text.replace("\n\n", "\n\n\n").strip()
+
+                # Logging of extracted text (controlled by config to avoid sensitive exposure)
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    "Markdown extractor=%s, markdown chars for file '%s' (id=%s): %d",
+                    extractor_used,
+                    fm.file_name,
+                    str(fm.file_id),
+                    len(md_text or ""),
+                )
+                if OCRServiceConfigs.LOG_OCR_TEXT and md_text:
+                    snippet = md_text.strip()
+                    max_len = OCRServiceConfigs.OCR_TEXT_LOG_MAX_LENGTH
+                    if len(snippet) > max_len:
+                        snippet = snippet[:max_len] + "... [TRUNCATED]"
+                    logger.info("Markdown PDF text (snippet):\n%s", snippet if snippet else "[EMPTY]")
+                # Upsert OCRInfo (single row per file)
+                info = db.query(OCRInfo).filter(OCRInfo.file_id == fm.file_id).first()
+                if not info:
+                    info = OCRInfo(
+                        file_id=fm.file_id,
+                        total_pages=1,
+                        completed_pages=1,
+                        error_pages=0,
+                    )
+                    db.add(info)
+                else:
+                    info.total_pages = 1
+                    info.completed_pages = 1
+                    info.error_pages = 0
+
+                # Upsert OCROutputs for page 1
+                output = db.query(OCROutputs).filter(
+                    OCROutputs.file_id == fm.file_id,
+                    OCROutputs.page_number == 1,
+                ).first()
+                if not output:
+                    output = OCROutputs(
+                        file_id=fm.file_id,
+                        page_number=1,
+                        page_text=md_text or "",
+                        is_completed=True,
+                    )
+                    db.add(output)
+                else:
+                    output.page_text = md_text or ""
+                    output.error_msg = None
+                    output.is_completed = True
+
+            db.commit()
+    except Exception as e:
+        # Do not fail chat append if file processing fails
+        logging.getLogger(__name__).error(f"Error processing uploaded files for usecase {usecase_id}: {e}")
     
     # Fire background inference with Gemini
     background_tasks.add_task(_run_gemini_chat_inference_sync, usecase_id, payload.content)

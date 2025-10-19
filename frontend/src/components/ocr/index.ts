@@ -1,2 +1,1 @@
-export { OCRConfirmationModal } from './OCRConfirmationModal';
-export { OCRDisplay } from './OCRDisplay';
+// OCR UI removed per new processing flow

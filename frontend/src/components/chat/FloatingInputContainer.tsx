@@ -10,15 +10,15 @@ export const FloatingInputContainer: React.FC<FloatingInputContainerProps> = ({
 }) => {
   const { state: sidebarState } = useSidebar();
   const isSidebarCollapsed = sidebarState === "collapsed";
-  
   return (
     <div 
       className={`
-        fixed bottom-0 left-0 right-0 z-30
-        p-3 sm:p-4 md:p-6 
+        fixed bottom-0 right-0 z-20
+        p-3 sm:p-4 md:p-6
         border-t border-gray-800 glassmorphism-input
+        bg-background
         transition-all duration-300
-        ${isSidebarCollapsed ? 'pl-14' : 'pl-16 sm:pl-72 md:pl-80'}
+        ${isSidebarCollapsed ? 'left-0' : 'left-0 md:left-80'}
       `}
     >
       {children}

@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { Plus, MessageSquare, Settings, HelpCircle, Menu } from "lucide-react";
 import {
-  Sidebar,
   SidebarContent,
   SidebarGroup,
   SidebarGroupContent,
@@ -146,8 +145,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
 
   return (
     <TooltipProvider>
-      <Sidebar className={`${isCollapsed ? "w-14" : "w-64 sm:w-72 md:w-80"} border-r border-sidebar-border bg-sidebar flex flex-col h-screen fixed z-[100] shadow-xl transition-all duration-300`}>
-        <SidebarContent className="p-2 xs:p-3 sm:p-4 flex flex-col h-full">
+      <SidebarContent className="p-2 xs:p-3 sm:p-4 flex flex-col h-full">
           {/* Header with toggle and new chat */}
           <div className="flex items-center justify-between mb-3 sm:mb-6">
             {!isCollapsed && (
@@ -308,7 +306,6 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
             </SidebarMenu>
           </div>
         </SidebarContent>
-      </Sidebar>
     </TooltipProvider>
   );
 }

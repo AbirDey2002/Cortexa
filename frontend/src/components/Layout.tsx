@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarProvider, SidebarTrigger, SidebarInset, Sidebar } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { TopNavigation } from "@/components/TopNavigation";
 import { ChatInterface } from "@/components/ChatInterface";
@@ -15,6 +15,7 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange }: LayoutPr
   const [currentModel, setCurrentModel] = useState("Cortexa-4 Pro");
   const [userId, setUserId] = useState<string>("");
   const [activeUsecaseId, setActiveUsecaseId] = useState<string | null>(null);
+  
 
   // Use hardcoded user ID from backend
   useEffect(() => {
@@ -72,39 +73,39 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange }: LayoutPr
   return (
     <SidebarProvider defaultOpen={true}>
       <div className="min-h-screen flex w-full bg-background">
-        {/* App Sidebar with higher z-index to be on top of other elements */}
-        <AppSidebar
-          userId={userId}
-          activeUsecaseId={activeUsecaseId}
-          onSelectUsecase={(id) => {
-            setActiveUsecaseId(id);
-            if (onUsecaseChange) onUsecaseChange(id);
-          }}
-          onNewUsecase={(id) => {
-            setActiveUsecaseId(id);
-            if (onUsecaseChange) onUsecaseChange(id);
-          }}
-        />
+        {/* App Sidebar as inset column (no overlay); content provided by AppSidebar */}
+        <Sidebar variant="inset" collapsible="offcanvas" className="border-r border-sidebar-border">
+          <AppSidebar
+            userId={userId}
+            activeUsecaseId={activeUsecaseId}
+            onSelectUsecase={(id) => {
+              setActiveUsecaseId(id);
+              if (onUsecaseChange) onUsecaseChange(id);
+            }}
+            onNewUsecase={(id) => {
+              setActiveUsecaseId(id);
+              if (onUsecaseChange) onUsecaseChange(id);
+            }}
+          />
+        </Sidebar>
         
-        <div className="flex-1 flex flex-col w-full">
-          <div className="flex items-center h-12 sm:h-14 border-b border-border glassmorphism-navbar fixed top-0 left-0 right-0 z-40">
+        <SidebarInset>
+          <div className="flex items-center h-12 sm:h-14 border-b border-border glassmorphism-navbar sticky top-0 z-40 bg-background">
             <div className="flex items-center h-full pl-2 sm:pl-4">
-              <SidebarTrigger className="mr-1 sm:mr-2" />
+              <SidebarTrigger className="mr-1 sm:mr-2 inline-flex md:peer-data-[state=expanded]:hidden" />
             </div>
             <div className="flex-1">
-              <div className="max-w-full sm:max-w-3xl md:max-w-4xl lg:max-w-6xl mx-auto px-2 sm:px-4 transition-all duration-300">
-                <TopNavigation 
-                  currentModel={currentModel}
-                  onModelChange={setCurrentModel}
-                />
-              </div>
+              <TopNavigation 
+                currentModel={currentModel}
+                onModelChange={setCurrentModel}
+              />
             </div>
           </div>
-          
-          <main className="flex-1 overflow-hidden pt-12 sm:pt-14 pb-20 sm:pb-24">
+
+          <main className="flex-1 overflow-hidden">
             {children || <ChatInterface userId={userId} usecaseId={activeUsecaseId} />}
           </main>
-        </div>
+        </SidebarInset>
       </div>
     </SidebarProvider>
   );

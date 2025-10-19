@@ -6,9 +6,7 @@ import { Card } from "@/components/ui/card";
 import { FileChip } from "@/components/FileChip";
 import { PreviewPanel } from "@/components/PreviewPanel";
 import { apiGet, apiPost, API_BASE_URL } from "@/lib/utils";
-import { useSidebar } from "@/components/ui/sidebar";
 import { ChatInput, FloatingInputContainer } from "@/components/chat";
-import { OCRConfirmationModal, OCRDisplay } from "@/components/ocr";
 
 interface Message {
   id: string;
@@ -23,11 +21,14 @@ interface Message {
   toolCall?: string;
 }
 
-interface UploadedFile {
+// Files selected to be sent with the next message
+interface SelectedFile {
   name: string;
   type: string;
   file: File;
 }
+
+// Removed UploadedFilesTab and processing modal
 
 interface Props {
   userId: string;
@@ -38,21 +39,18 @@ export function ChatInterface({ userId, usecaseId }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<SelectedFile[]>([]);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewContent, setPreviewContent] = useState("");
   const [previewTitle, setPreviewTitle] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Removed files tray and processing modal state
   const [status, setStatus] = useState<string>("Completed");
   const [waitingForResponse, setWaitingForResponse] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
-  // OCR-related state
-  const [showOCRModal, setShowOCRModal] = useState(false);
-  const [showOCRDisplay, setShowOCRDisplay] = useState(false);
-  const [ocrExpanded, setOcrExpanded] = useState(false);
-  const [pendingOCRToolCall, setPendingOCRToolCall] = useState<any>(null);
+  // Removed OCR UI state
 
   // Scroll to bottom when messages change
   const scrollToBottom = () => {
@@ -61,7 +59,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
     }
   };
 
-  // Load chat for selected usecase
+  // Load chat for selected usecase and reset per-chat state
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -105,27 +103,6 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             return message;
           }
           
-          // Check for OCR tool call
-          if (entry.tool_call === "ocr") {
-            // Handle OCR tool call
-            const toolData = entry.tool_data || {};
-            const userResponse = toolData.user_response || "I need to perform OCR on your documents.";
-            
-            // Show the confirmation modal if this is the latest message
-            if (idx === 0) {
-              setPendingOCRToolCall(entry);
-              setShowOCRModal(true);
-            }
-            
-            return { 
-              id: `a-${idx}`, 
-              type: "assistant", 
-              content: userResponse, 
-              timestamp: ts,
-              toolCall: "ocr"
-            } as Message & {toolCall?: string};
-          }
-          
           const content = entry.system;
           // agent output contains JSON; show only user_answer if present
           let shown = content;
@@ -148,6 +125,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
       }
     }
     load();
+    // No files tray/modal state to reset
     return () => {
       cancelled = true;
     };
@@ -295,9 +273,9 @@ export function ChatInterface({ userId, usecaseId }: Props) {
       type: "user",
       content: inputValue,
       timestamp: new Date(),
-      file: uploadedFiles.length > 0 ? {
-        name: uploadedFiles[0].name,
-        type: uploadedFiles[0].type
+      file: pendingFiles.length > 0 ? {
+        name: pendingFiles[0].name,
+        type: pendingFiles[0].type
       } : undefined,
     };
 
@@ -306,10 +284,10 @@ export function ChatInterface({ userId, usecaseId }: Props) {
     setTimeout(scrollToBottom, 100);
     
     const messageContent = inputValue;
-    const filesToUpload = [...uploadedFiles];
+    const filesToUpload = [...pendingFiles];
     
     setInputValue("");
-    setUploadedFiles([]);
+    setPendingFiles([]);
     setIsLoading(true);
 
     try {
@@ -357,12 +335,14 @@ export function ChatInterface({ userId, usecaseId }: Props) {
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (files) {
-      const newFiles: UploadedFile[] = Array.from(files).map(file => ({
+      const selected: SelectedFile[] = Array.from(files).map(file => ({
         name: file.name,
         type: file.type,
         file: file,
       }));
-      setUploadedFiles(prev => [...prev, ...newFiles]);
+      setPendingFiles(prev => [...prev, ...selected]);
+
+      // No modal open after upload
     }
     // Reset the input
     if (fileInputRef.current) {
@@ -371,7 +351,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
   };
 
   const handleRemoveFile = (index: number) => {
-    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+    setPendingFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleOpenPreview = (messageId: string) => {
@@ -437,44 +417,36 @@ export function ChatInterface({ userId, usecaseId }: Props) {
     }
   };
 
-  // OCR-related handlers
-  const handleOCRConfirm = async (selectedFileId: string) => {
+  // Removed OCR handlers and UI
+
+  // Sidebar state not needed for removed files tray
+
+  // Modal handlers for processing
+  const handleConfirmProcess = async () => {
+    if (!usecaseId) {
+      setIsProcessModalOpen(false);
+      return;
+    }
+    setHasProcessedInThisChat(true);
+    setIsProcessingInProgress(true);
+    setIsProcessModalOpen(false);
     try {
-      setShowOCRModal(false);
-      setShowOCRDisplay(true);
-      
-      // Start OCR processing for the selected file
-      await apiPost(`/files/ocr/${selectedFileId}/start`, {});
-      console.log("OCR processing started for file:", selectedFileId);
-      
-    } catch (error) {
-      console.error("Error starting OCR:", error);
-      // Still show the display in case OCR was already running
+      await startProcessingDocuments(usecaseId);
+    } finally {
+      setIsProcessingInProgress(false);
     }
   };
 
-  const handleOCRModalClose = () => {
-    setShowOCRModal(false);
-    setPendingOCRToolCall(null);
+  const handleCloseProcessModal = () => {
+    setIsProcessModalOpen(false);
   };
-
-  const handleOCRDisplayClose = () => {
-    setShowOCRDisplay(false);
-    setOcrExpanded(false);
-  };
-
-  const handleOCRDisplayToggleExpand = () => {
-    setOcrExpanded(!ocrExpanded);
-  };
-
-  // Get sidebar state to adjust layout
-  const { state: sidebarState } = useSidebar();
-  const isSidebarCollapsed = sidebarState === "collapsed";
   
   return (
-    <div className={`flex h-full w-full transition-all duration-300 ${isSidebarCollapsed ? 'pl-14' : 'pl-16 sm:pl-72 md:pl-80'}`}>
+    <div className={`
+      flex h-full w-full transition-all duration-300
+    `}>
       {/* Main Chat Area */}
-      <div className={`flex flex-col transition-all duration-300 h-full ${previewOpen ? 'w-full md:w-3/5' : 'w-full'} ${isSidebarCollapsed ? 'max-w-full sm:max-w-3xl md:max-w-4xl lg:max-w-5xl mx-auto px-4' : 'px-4'}`}>
+      <div className={`flex flex-col h-full w-full ${previewOpen ? 'md:w-3/5' : 'w-full'}`}>
         {(!usecaseId) ? (
           // Welcome State
           <div className="flex-1 flex items-center justify-center p-4 sm:p-6 md:p-8">
@@ -512,8 +484,8 @@ export function ChatInterface({ userId, usecaseId }: Props) {
           </div>
         ) : (
           // Chat Messages
-          <ScrollArea ref={scrollAreaRef} className="flex-1 p-3 sm:p-4 md:p-6 pb-24 overflow-y-auto">
-            <div className="space-y-4 sm:space-y-6 max-w-full md:max-w-4xl mx-auto overflow-hidden">
+          <ScrollArea ref={scrollAreaRef} className="flex-1 pb-24 overflow-y-auto">
+            <div className="space-y-4 sm:space-y-6 max-w-full md:max-w-4xl mx-auto px-4 overflow-hidden">
               {messages.map((message) => (
                 <div
                   key={message.id}
@@ -575,11 +547,11 @@ export function ChatInterface({ userId, usecaseId }: Props) {
 
         {/* Chat Input */}
         <FloatingInputContainer>
-          <div className="space-y-2">
+          <div className="max-w-full md:max-w-4xl mx-auto px-4 space-y-2">
             {/* File Chips */}
-            {uploadedFiles.length > 0 && (
-              <div className="flex flex-wrap gap-2 max-w-5xl mx-auto px-3">
-                {uploadedFiles.map((file, index) => (
+            {pendingFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {pendingFiles.map((file, index) => (
                   <FileChip
                     key={index}
                     file={file}
@@ -611,7 +583,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
       </div>
 
       {/* Preview Panel */}
-      {previewOpen && !ocrExpanded && (
+      {previewOpen && (
         <div className="w-full md:w-2/5 h-full fixed md:relative right-0 top-0 z-40 md:z-auto">
           <PreviewPanel
             content={previewContent}
@@ -621,32 +593,6 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         </div>
       )}
 
-      {/* OCR Display Panel */}
-      {showOCRDisplay && usecaseId && (
-        <div className={`
-          ${ocrExpanded 
-            ? 'fixed top-0 right-0 w-full h-full z-50' 
-            : 'w-full md:w-2/5 h-full fixed md:relative right-0 top-0 z-40 md:z-auto'
-          }
-        `}>
-          <OCRDisplay
-            usecaseId={usecaseId}
-            isExpanded={ocrExpanded}
-            onToggleExpand={handleOCRDisplayToggleExpand}
-            onClose={handleOCRDisplayClose}
-          />
-        </div>
-      )}
-
-      {/* OCR Confirmation Modal */}
-      {showOCRModal && usecaseId && (
-        <OCRConfirmationModal
-          isOpen={showOCRModal}
-          onClose={handleOCRModalClose}
-          onConfirm={handleOCRConfirm}
-          usecaseId={usecaseId}
-        />
-      )}
     </div>
   );
 }

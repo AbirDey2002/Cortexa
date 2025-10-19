@@ -200,7 +200,7 @@ def create_enhanced_cortexa_prompt() -> str:
 
 **TOOL CALLS**
 - Set "tool_call" to null for normal responses
-- Set "tool_call" to a string like "ocr" only when a specific tool is needed
+- Set "tool_call" to the string "ocr" only when the uploaded document contents need to be read by the agent. when user specifically asks for the contents of the document or something which can be answered by the contents of the document, set the tool_call to "ocr".
 
 **CONVERSATION MEMORY**
 - You have access to full chat history
