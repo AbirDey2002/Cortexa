@@ -1,4 +1,5 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ChatTrace } from "./ChatTrace";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -6,6 +7,26 @@ import { FileText, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import "highlight.js/styles/github-dark.css";
+
+interface Traces {
+  engine?: string | null;
+  tool_calls?: Array<{
+    name: string;
+    started_at?: string;
+    finished_at?: string;
+    duration_ms?: number;
+    ok?: boolean;
+    args_preview?: string;
+    result_preview?: string;
+    chars_read?: number | null;
+    error?: string | null;
+  }>;
+  planning?: {
+    todos?: any[];
+    subagents?: any[];
+    filesystem_ops?: any[];
+  };
+}
 
 interface Message {
   id: string;
@@ -17,6 +38,7 @@ interface Message {
   };
   timestamp: Date;
   hasPreview?: boolean;
+  traces?: Traces;
 }
 
 interface ChatContentProps {
@@ -33,6 +55,10 @@ export const ChatContent: React.FC<ChatContentProps> = ({
   onOpenPreview,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
+
+  const toggleTraces = (id: string) =>
+    setExpandedTraces(prev => ({ ...prev, [id]: !prev[id] }));
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -121,7 +147,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
                 </span>
               </div>
             )}
-            <div className="text-sm leading-relaxed break-words overflow-hidden markdown-content">
+            <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeHighlight]}
@@ -220,9 +246,13 @@ export const ChatContent: React.FC<ChatContentProps> = ({
                   ),
                 }}
               >
-                {message.content}
+                {normalizeMarkdownText(message.content)}
               </ReactMarkdown>
             </div>
+            {/* Traces disclosure */}
+            {message.type === "assistant" && message.traces && (
+              <ChatTrace traces={message.traces} />
+            )}
             {message.hasPreview && onOpenPreview && (
               <Button
                 onClick={() => onOpenPreview(message.id)}

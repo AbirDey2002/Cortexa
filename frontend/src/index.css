@@ -155,17 +155,18 @@ All colors MUST be HSL for proper theming.
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 12px; /* thicker for visibility */
+  height: 12px; /* thicker horizontal bar */
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: hsl(var(--muted) / 0.2); /* subtle track to make bar visible */
 }
 
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted) / 0.5);
+  background: hsl(var(--muted) / 0.7);
   border-radius: 10px;
+  border: 2px solid hsl(var(--background));
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -176,6 +177,7 @@ All colors MUST be HSL for proper theming.
 .markdown-content {
   /* Typography improvements */
   line-height: 1.6;
+  scrollbar-width: auto; /* Firefox: use thicker scrollbar */
 }
 
 .markdown-content p {
@@ -215,6 +217,40 @@ All colors MUST be HSL for proper theming.
 /* Table styling */
 .markdown-content table {
   font-size: 0.75rem;
+  width: 100%;
+  border-collapse: collapse;
+}
+.markdown-content table,
+.markdown-content thead,
+.markdown-content tbody,
+.markdown-content tr,
+.markdown-content th,
+.markdown-content td {
+  display: revert; /* ensure table semantics preserved when inside markdown containers */
+}
+.markdown-content td > *,
+.markdown-content th > * {
+  max-width: max-content;
+}
+.markdown-content .table-wrapper,
+.markdown-content table {
+  overflow-x: auto;
+}
+.markdown-content th,
+.markdown-content td {
+  padding: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+.markdown-content thead {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Ensure horizontal scrolling for wide markdown blocks */
+.markdown-content pre,
+.markdown-content code,
+.markdown-content blockquote,
+.markdown-content .hljs {
+  overflow-x: auto;
 }
 
 /* Blockquote styling */

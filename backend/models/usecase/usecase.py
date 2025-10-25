@@ -23,6 +23,7 @@ class UsecaseMetadata(Base):
     scenario_generation = Column(String(50), default="Not Started")
     test_case_generation = Column(String(50), default="Not Started")
     test_script_generation = Column(String(50), default="Not Started")
+    requirement_generation_confirmed = Column(Boolean, default=False, nullable=False)
     status = Column(String(20), default="Completed", nullable=False)
     is_deleted = Column(Boolean, default = False, nullable = False)
     created_at = Column(DateTime, default = func.now(), nullable = False)

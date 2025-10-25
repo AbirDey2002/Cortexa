@@ -207,8 +207,10 @@ class ChatHistoryManager:
         Returns:
             str: Formatted context for LLM
         """
-        # Get the context from summary and recent history
-        context = get_context_for_llm(chat_history, chat_summary)
+        # Prune non-essential fields from chat history for LLM context while preserving storage
+        pruned_history = prune_chat_history_for_context(chat_history)
+        # Get the context from summary and recent pruned history
+        context = get_context_for_llm(pruned_history, chat_summary)
         
         # Add the current query
         if context:
@@ -249,6 +251,53 @@ class ChatHistoryManager:
         }
         
         return stats
+
+
+def prune_chat_history_for_context(chat_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return a compact history for LLM context only.
+
+    Rules:
+    - Keep user messages as plain text strings.
+    - For assistant/system entries, extract readable text/markdown only; drop traces, tool metadata, signatures, files.
+    - Preserve chronological order and timestamps if needed by downstream functions.
+    """
+    pruned: List[Dict[str, Any]] = []
+    for entry in chat_history or []:
+        # Pass through timestamp if present
+        timestamp = entry.get("timestamp")
+        if "user" in entry:
+            value = str(entry.get("user", ""))
+            pruned.append({"user": value, **({"timestamp": timestamp} if timestamp else {})})
+            continue
+        if "system" in entry:
+            system_value = entry.get("system")
+            # Attempt to extract main text from structured chunk arrays if present as a string
+            text_out = _extract_text_like(system_value)
+            pruned.append({"system": text_out, **({"timestamp": timestamp} if timestamp else {})})
+            continue
+        # Fallback: ignore unknown shapes
+    return pruned
+
+
+def _extract_text_like(value: Any) -> str:
+    """Best-effort extraction of text content from various stored formats.
+
+    Handles plain strings and stringified arrays of chunks like:
+    "[{'type': 'text', 'text': '...'}, ...]" by extracting 'text' fields.
+    """
+    try:
+        if isinstance(value, str):
+            s = value.strip()
+            # Fast path: looks like a JSON/py array of chunks
+            if s.startswith("[") and ("'text'" in s or '"text"' in s):
+                import re
+                texts = re.findall(r"(?:'text'|\"text\")\s*:\s*(?:'([^']*)'|\"([^\"]*)\")", s)
+                joined = "\n\n".join([t[0] or t[1] for t in texts if (t[0] or t[1])])
+                return joined if joined else s
+            return s
+        return str(value)
+    except Exception:
+        return str(value)
 
 
 # Utility functions for easy access

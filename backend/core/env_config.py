@@ -90,3 +90,20 @@ def get_env_variable(key: str, default: str = "") -> str:
     """
     return os.getenv(key, default)
 
+
+def get_deepagents_config() -> dict:
+    """
+    Return DeepAgents-related configuration from environment.
+    """
+    return {
+        "DEEPAGENTS_API_KEY": os.getenv("DEEPAGENTS_API_KEY", ""),
+        "DEEPAGENTS_BASE_URL": os.getenv("DEEPAGENTS_BASE_URL", ""),
+        # Default to disabling auth locally if not explicitly provided
+        "DEEPAGENTS_DISABLE_AUTH": os.getenv("DEEPAGENTS_DISABLE_AUTH", "true"),
+        # Some builds require explicitly omitting auth headers
+        "DEEPAGENTS_OMIT_AUTH_HEADERS": os.getenv("DEEPAGENTS_OMIT_AUTH_HEADERS", "true"),
+        # Optional hints for model/provider selection
+        "DEEPAGENTS_MODEL_PROVIDER": os.getenv("DEEPAGENTS_MODEL_PROVIDER", "google-generativeai"),
+        "DEEPAGENTS_MODEL_NAME": os.getenv("DEEPAGENTS_MODEL_NAME", "gemini-2.5-flash"),
+    }
+

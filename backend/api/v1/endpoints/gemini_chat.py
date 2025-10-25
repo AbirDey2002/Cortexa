@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 import os
 import hashlib
+import json
 
 from deps import get_db
 from models.file_processing.file_metadata import FileMetadata
@@ -16,6 +17,7 @@ from core.config import OCRServiceConfigs
 from db.session import get_db_context
 from models.usecase.usecase import UsecaseMetadata
 from models.user.user import User
+from models.generator.requirement import Requirement
 from services.llm.gemini_conversational.gemini_invoker import (
     invoke_gemini_chat_with_timeout,
     invoke_gemini_chat_with_history_management,
@@ -24,6 +26,7 @@ from services.llm.gemini_conversational.gemini_invoker import (
 )
 from services.llm.gemini_conversational.json_output_parser import parse_llm_response, create_enhanced_cortexa_prompt
 from services.llm.gemini_conversational.history_manager import manage_chat_history_for_usecase
+from services.agent.agent_runner import run_agent_turn
 import google.generativeai as genai
 from core.env_config import get_env_variable
 
@@ -189,32 +192,9 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, ti
                     )
                 )
 
-                # Initialize model for streaming
-                model = genai.GenerativeModel(
-                    model_name="gemini-2.5-flash",
-                    system_instruction=create_enhanced_cortexa_prompt()
-                )
-
-                # Log context sizes
-                logger.info(
-                    "Gemini streaming input (history msgs=%d, context chars=%d)",
-                    len(updated_history or []), len(context)
-                )
-
-                # Start streaming
-                assistant_text = ""
-                gemini_streaming_responses[str(usecase_id)] = ""
-                try:
-                    stream = model.generate_content(context, stream=True)
-                    for chunk in stream:
-                        if hasattr(chunk, "text") and chunk.text:
-                            assistant_text += chunk.text
-                            gemini_streaming_responses[str(usecase_id)] = assistant_text
-                except Exception:
-                    # Fallback to non-streaming if streaming fails
-                    resp = model.generate_content(context)
-                    assistant_text = resp.text or ""
-                    gemini_streaming_responses[str(usecase_id)] = assistant_text
+                # Delegate to deep agent for orchestration
+                assistant_text, traces = run_agent_turn(usecase_id, user_message)
+                gemini_streaming_responses[str(usecase_id)] = assistant_text
 
                 # First pass logging
                 try:
@@ -232,37 +212,10 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, ti
                 except Exception:
                     pass
 
-                # Tool-call handling (OCR)
-                is_tool, tool_type, parsed = _check_for_tool_call_gemini(assistant_text)
-                if is_tool and tool_type == "ocr":
-                    logger.info("Tool call 'ocr' detected; building documents markdown for usecase_id=%s", str(usecase_id))
-                    files_list, combined_markdown = _get_usecase_documents_markdown(db, usecase_id)
-                    logger.info(
-                        "Docs for OCR: files=%d, combined_markdown_chars=%d",
-                        len(files_list), len(combined_markdown)
-                    )
-                    gemini_streaming_responses[str(usecase_id)] = "Analyzing documents...\n"
+                # All tool orchestration handled inside deep agent runner
 
-                    # Re-invoke with documents
-                    context_with_docs = context + "\n\nDocument details (Markdown):\n" + combined_markdown[:60000]
-                    final_text = ""
-                    try:
-                        try:
-                            stream2 = model.generate_content(context_with_docs, stream=True)
-                            for chunk in stream2:
-                                if hasattr(chunk, "text") and chunk.text:
-                                    final_text += chunk.text
-                                    gemini_streaming_responses[str(usecase_id)] = final_text
-                        except Exception:
-                            resp2 = model.generate_content(context_with_docs)
-                            final_text = resp2.text or ""
-                            gemini_streaming_responses[str(usecase_id)] = final_text
-                        assistant_text = final_text
-                    except Exception as e:
-                        logger.exception("Second-pass generation with documents failed: %s", e)
-
-                # Persist only final text
-                system_entry = {"system": assistant_text, "timestamp": _utc_now_iso()}
+                # Persist full record (system text + structured traces)
+                system_entry = {"system": assistant_text, "timestamp": _utc_now_iso(), "traces": traces}
                 updated_history = [system_entry] + (updated_history or [])
 
                 record.chat_history = updated_history

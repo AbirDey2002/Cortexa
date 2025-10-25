@@ -15,6 +15,9 @@ from sqlalchemy.orm import Session
 
 import google.generativeai as genai
 import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
@@ -23,7 +26,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from core.env_config import get_env_variable
 
 # Import history management modules
-from .history_manager import manage_chat_history_for_usecase, ChatHistoryManager
+from .history_manager import manage_chat_history_for_usecase, ChatHistoryManager, prune_chat_history_for_context
 from .token_counter import get_token_usage_info
 from .json_output_parser import (
     parse_llm_response, 
@@ -68,9 +71,11 @@ def invoke_gemini_chat(query: str, chat_history: Optional[list] = None, timeout_
         )
         
         # Build conversation history for context
+        # Use pruned history for LLM context
         conversation_context = []
         if chat_history:
-            for entry in chat_history:
+            pruned = prune_chat_history_for_context(chat_history)
+            for entry in pruned:
                 if "user" in entry:
                     conversation_context.append(f"User: {entry['user']}")
                 elif "system" in entry:
@@ -79,16 +84,16 @@ def invoke_gemini_chat(query: str, chat_history: Optional[list] = None, timeout_
         # Add current query
         full_prompt = "\n".join(conversation_context + [f"User: {query}"])
 
-        # Log inputs sent to the LLM (trimmed for readability)
+        # Log inputs sent to the LLM (full)
         try:
             context_str = "\n".join(conversation_context)
             logger.info(
-                "Gemini LLM input (history msgs=%d, context chars=%d, total prompt chars=%d):\nContext Preview:\n%s\nPrompt Preview:\n%s",
+                "Gemini LLM input (history msgs=%d, context chars=%d, total prompt chars=%d):\nContext:\n%s\nPrompt:\n%s",
                 len(chat_history or []),
                 len(context_str),
                 len(full_prompt),
-                (context_str[:800] + ("..." if len(context_str) > 800 else "")),
-                (full_prompt[:800] + ("..." if len(full_prompt) > 800 else "")),
+                context_str,
+                full_prompt,
             )
         except Exception:
             pass
@@ -106,6 +111,16 @@ def invoke_gemini_chat(query: str, chat_history: Optional[list] = None, timeout_
         
         # Extract response text
         response_text = response.text if response.text else "No response generated"
+        # Write full response to disk
+        try:
+            base = _requirements_log_dir()
+            ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+            out_path = os.path.join(base, f"{ts}-gemini_chat-out.txt")
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(response_text)
+            logger.info("invoke_gemini_chat: wrote full response to %s (chars=%d)", out_path, len(response_text))
+        except Exception:
+            pass
         
         # Estimate costs (Gemini pricing is typically very low)
         # These are rough estimates based on input/output tokens
@@ -186,6 +201,90 @@ def invoke_gemini_chat_with_timeout(query: str, chat_history: Optional[list] = N
         return error_response, 0.0, 0
 
 
+def _requirements_log_dir() -> str:
+    base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "logs", "requirements")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def invoke_freeform_prompt(prompt: str) -> str:
+    """Send a single freeform prompt to Gemini and return raw text.
+
+    Logs full prompt/response to console and writes to backend/logs/requirements.
+    """
+    if not GEMINI_API_KEY:
+        logger.error("invoke_freeform_prompt: GEMINI_API_KEY not set")
+        return ""
+    model = genai.GenerativeModel(model_name="gemini-2.5-flash")
+    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+    log_dir = _requirements_log_dir()
+    in_path = os.path.join(log_dir, f"{ts}-freeform-in.txt")
+    out_path = os.path.join(log_dir, f"{ts}-freeform-out.txt")
+    try:
+        # Log to files and console
+        try:
+            with open(in_path, "w", encoding="utf-8") as f:
+                f.write(prompt)
+        except Exception:
+            pass
+        logger.info("invoke_freeform_prompt: prompt_chars=%d file=%s", len(prompt), in_path)
+        resp = model.generate_content(prompt)
+        text = resp.text or ""
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:
+            pass
+        logger.info("invoke_freeform_prompt: response_chars=%d file=%s", len(text), out_path)
+        return text
+    except Exception as e:
+        logger.error("invoke_freeform_prompt: error %s", e, exc_info=True)
+        return ""
+
+
+# Async wrappers
+_EXECUTOR: Optional[ThreadPoolExecutor] = None
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    global _EXECUTOR
+    if _EXECUTOR is None:
+        _EXECUTOR = ThreadPoolExecutor(max_workers=4)
+    return _EXECUTOR
+
+
+async def async_generate_content(model, prompt: str) -> str:
+    loop = asyncio.get_running_loop()
+    def _call():
+        resp = model.generate_content(prompt)
+        return resp.text if getattr(resp, "text", None) else ""
+    return await loop.run_in_executor(_get_executor(), _call)
+
+
+async def async_generate_stream(model, prompt: str):
+    # Fallback: run sync stream in a thread and yield chunks via an async queue
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def _producer():
+        try:
+            stream = model.generate_content(prompt, stream=True)
+            for chunk in stream:
+                if hasattr(chunk, "text") and chunk.text:
+                    asyncio.run_coroutine_threadsafe(queue.put(chunk.text), loop)
+        except Exception as e:
+            logger.error("async_generate_stream error: %s", e, exc_info=True)
+        finally:
+            asyncio.run_coroutine_threadsafe(queue.put("__STREAM_END__"), loop)
+
+    _get_executor().submit(_producer)
+    while True:
+        piece = await queue.get()
+        if piece == "__STREAM_END__":
+            break
+        yield piece
+
+
 # Enhanced functions with history management and summarization
 
 async def invoke_gemini_chat_with_history_management(
@@ -260,6 +359,16 @@ async def invoke_gemini_chat_with_history_management(
         
         # Extract response text
         response_text = response.text if response.text else "No response generated"
+        # Write full response to disk
+        try:
+            base = _requirements_log_dir()
+            ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+            out_path = os.path.join(base, f"{ts}-gemini_history-out.txt")
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(response_text)
+            logger.info("invoke_gemini_chat_with_history_management: wrote full response to %s (chars=%d)", out_path, len(response_text))
+        except Exception:
+            pass
         
         # Estimate costs
         estimated_cost = 0.001  # Very rough estimate

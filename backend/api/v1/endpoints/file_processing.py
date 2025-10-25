@@ -3,6 +3,12 @@ import asyncio
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from services.file_processing.file_service import upload_file_to_blob
+from services.file_processing.pdf_text_extractor import (
+    download_file_to_bytes,
+    extract_pdf_markdown,
+    extract_pdf_text,
+    to_markdown,
+)
 from schemas.file_processing.file import FileMetadataSchema, FileWorkflowTrackerSchema
 from models.file_processing.file_metadata import FileMetadata
 from models.file_processing.file_workflow_tracker import FileWorkflowTracker
@@ -126,6 +132,16 @@ async def upload_file(background_tasks: BackgroundTasks,
             
             logger.info(f"User found. Using usecase ID: {usecase_id} for user: {email}")
 
+            # Toggle text_extraction to In Progress for this usecase
+            try:
+                usecase = db.query(UsecaseMetadata).filter(UsecaseMetadata.usecase_id == usecase_id).first()
+                if usecase:
+                    usecase.text_extraction = "In Progress"
+                    db.commit()
+                    logger.info(f"Set text_extraction='In Progress' for usecase {usecase_id}")
+            except Exception as e:
+                logger.warning(f"Unable to set text_extraction In Progress for usecase {usecase_id}: {e}")
+
             file_metadata_list = []
             for i, file in enumerate(files):
                 logger.info(f"Processing file {i+1}/{len(files)}: {file.filename}")
@@ -152,8 +168,67 @@ async def upload_file(background_tasks: BackgroundTasks,
             logger.info("Committing metadata to database")
             db.commit()
 
-            # Legacy OCR background processing removed
-            logger.info("Files uploaded successfully; OCR/background processing not started")
+            # Immediately process PDFs into Markdown and upsert OCR rows
+            processed_count = 0
+            for metadata in file_metadata_list:
+                try:
+                    bytes_data = download_file_to_bytes(metadata.file_link)
+                    logger.info(f"Read bytes for file_id={metadata.file_id} name={metadata.file_name}: {len(bytes_data)} bytes")
+                    md = extract_pdf_markdown(bytes_data)
+                    extractor = "pdfplumber"
+                    if not md:
+                        txt = extract_pdf_text(bytes_data)
+                        md = to_markdown(txt)
+                        extractor = "fallback"
+                    logger.info(f"Markdown extractor={extractor} chars={len(md)} for file_id={metadata.file_id}")
+
+                    # Upsert OCRInfo
+                    info = db.query(OCRInfo).filter(OCRInfo.file_id == metadata.file_id).first()
+                    if not info:
+                        info = OCRInfo(
+                            file_id=metadata.file_id,
+                            total_pages=1,
+                            completed_pages=1,
+                            error_pages=0,
+                        )
+                        db.add(info)
+                    else:
+                        info.total_pages = 1
+                        info.completed_pages = 1
+                        info.error_pages = 0
+
+                    # Upsert OCROutputs page 1
+                    out = db.query(OCROutputs).filter(
+                        OCROutputs.file_id == metadata.file_id,
+                        OCROutputs.page_number == 1,
+                    ).first()
+                    if not out:
+                        out = OCROutputs(
+                            file_id=metadata.file_id,
+                            page_number=1,
+                            page_text=md or "",
+                            is_completed=True,
+                        )
+                        db.add(out)
+                    else:
+                        out.page_text = md or ""
+                        out.error_msg = None
+                        out.is_completed = True
+                    db.commit()
+                    processed_count += 1
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"Error processing PDF for file_id={metadata.file_id}: {e}", exc_info=True)
+
+            # After processing all files, set usecase text_extraction status accordingly
+            try:
+                usecase2 = db.query(UsecaseMetadata).filter(UsecaseMetadata.usecase_id == usecase_id).first()
+                if usecase2:
+                    usecase2.text_extraction = "Completed" if processed_count > 0 else "Failed"
+                    db.commit()
+                    logger.info(f"Set text_extraction='{usecase2.text_extraction}' for usecase {usecase_id} (processed={processed_count})")
+            except Exception as e:
+                logger.warning(f"Unable to finalize text_extraction for usecase {usecase_id}: {e}")
 
             # Refresh metadata objects
             for metadata in file_metadata_list:

@@ -5,8 +5,53 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { FileChip } from "@/components/FileChip";
 import { PreviewPanel } from "@/components/PreviewPanel";
-import { apiGet, apiPost, API_BASE_URL } from "@/lib/utils";
-import { ChatInput, FloatingInputContainer } from "@/components/chat";
+import { apiGet, apiPost } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
+import { ChatInput, FloatingInputContainer, ChatTrace } from "@/components/chat";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import { RequirementsGenerationConfirmModal } from "@/components/chat/RequirementsGenerationConfirmModal";
+
+function extractMainTextFromStored(raw: any): string {
+  try {
+    if (typeof raw !== "string") return String(raw ?? "");
+    const s = raw.trim();
+    if (s.startsWith("[") && (s.includes("'text'") || s.includes('"text"'))) {
+      const re = /(?:'text'|\"text\")\s*:\s*(?:'([^']*)'|\"([^\"]*)\")/g;
+      const parts: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(s)) !== null) {
+        const val = m[1] || m[2] || "";
+        if (val) parts.push(val);
+      }
+      return parts.join("\n\n") || s;
+    }
+    return s;
+  } catch {
+    return String(raw ?? "");
+  }
+}
+
+interface Traces {
+  engine?: string | null;
+  tool_calls?: Array<{
+    name: string;
+    started_at?: string;
+    finished_at?: string;
+    duration_ms?: number;
+    ok?: boolean;
+    args_preview?: string;
+    result_preview?: string;
+    chars_read?: number | null;
+    error?: string | null;
+  }>;
+  planning?: {
+    todos?: any[];
+    subagents?: any[];
+    filesystem_ops?: any[];
+  };
+}
 
 interface Message {
   id: string;
@@ -19,6 +64,7 @@ interface Message {
   timestamp: Date;
   hasPreview?: boolean;
   toolCall?: string;
+  traces?: Traces;
 }
 
 // Files selected to be sent with the next message
@@ -37,8 +83,18 @@ interface Props {
 
 export function ChatInterface({ userId, usecaseId }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [reqGenConfirmOpen, setReqGenConfirmOpen] = useState(false);
+  const [isReqGenBlocking, setIsReqGenBlocking] = useState(false);
+  const reqGenPollTimerRef = useRef<number | null>(null);
+  const { toast } = useToast();
+  const [isOcrProcessing, setIsOcrProcessing] = useState(false);
+  const [reqGenStatus, setReqGenStatus] = useState<"Not Started" | "In Progress" | "Completed" | "Failed" | "">("");
+  const [lastReqGenCheckedUsecaseId, setLastReqGenCheckedUsecaseId] = useState<string | null>(null);
+  const [reqGenConfirmed, setReqGenConfirmed] = useState<boolean>(false);
+  const ocrBannerTimerRef = useRef<number | null>(null);
   const [pendingFiles, setPendingFiles] = useState<SelectedFile[]>([]);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewContent, setPreviewContent] = useState("");
@@ -65,12 +121,27 @@ export function ChatInterface({ userId, usecaseId }: Props) {
     async function load() {
       if (!usecaseId) {
         setMessages([]);
+        setReqGenStatus("");
+        setLastReqGenCheckedUsecaseId(null);
         return;
       }
       try {
         const statuses = await apiGet<any>(`/frontend/usecases/${usecaseId}/statuses`);
         if (cancelled) return;
         setStatus(statuses.status || "Completed");
+        // Initialize requirement generation status banner on usecase change
+        try {
+          const rg = await apiGet<any>(`/requirements/${usecaseId}/status`);
+          const state = String(rg?.requirement_generation || "").trim().toLowerCase();
+          setReqGenStatus((state === "completed") ? "Completed" : (state === "in progress") ? "In Progress" : (state === "failed") ? "Failed" : "Not Started");
+          setReqGenConfirmed(!!rg?.requirement_generation_confirmed);
+          setLastReqGenCheckedUsecaseId(usecaseId);
+          if (rg?.requirement_generation === "In Progress") {
+            setIsReqGenBlocking(true);
+          } else if (rg?.requirement_generation === "Completed" || rg?.requirement_generation === "Failed") {
+            setIsReqGenBlocking(false);
+          }
+        } catch {}
         // Fetch unified chat history (Gemini-backed backend writes to same store)
         const history = await apiGet<any[]>(`/frontend/usecases/${usecaseId}/chat`);
         if (cancelled) return;
@@ -105,14 +176,38 @@ export function ChatInterface({ userId, usecaseId }: Props) {
           
           const content = entry.system;
           // agent output contains JSON; show only user_answer if present
-          let shown = content;
+          let shown = extractMainTextFromStored(content);
           try {
             const m = content.match(/```json\s*([\s\S]*?)\s*```/i);
             const jsonText = m ? m[1] : content;
             const obj = JSON.parse(jsonText);
-            if (obj && obj.user_answer) shown = obj.user_answer;
+            if (obj && obj.system_event === "requirement_generation_confirmation_required") {
+              // Optional guard: do not re-open if consent already recorded
+              if (lastReqGenCheckedUsecaseId === usecaseId && reqGenConfirmed) {
+                // consent already recorded; ignore
+              } else {
+              console.debug("system_event detected: requirement_generation_confirmation_required");
+              setReqGenConfirmOpen(true);
+              setIsReqGenBlocking(true);
+              setWaitingForResponse(false);
+              setIsLoading(false);
+              shown = "I've identified documents ready for requirement generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+              }
+            } else if (obj && obj.system_event === "requirement_generation_in_progress") {
+              console.debug("system_event detected: requirement_generation_in_progress");
+              setIsReqGenBlocking(true);
+              setWaitingForResponse(false);
+              setIsLoading(false);
+              setReqGenStatus("In Progress");
+            } else if (obj && obj.user_answer) {
+              shown = obj.user_answer;
+            }
           } catch {}
-          return { id: `a-${idx}`, type: "assistant", content: shown, timestamp: ts } as Message;
+          const msg: Message = { id: `a-${idx}`, type: "assistant", content: shown, timestamp: ts } as Message;
+          if (entry.traces) {
+            msg.traces = entry.traces as Traces;
+          }
+          return msg;
         });
         
         setMessages(mappedMessages);
@@ -203,14 +298,34 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                 return message;
               }
               const content = entry.system;
-              let shown = content;
+              let shown = extractMainTextFromStored(content);
               try {
                 const m = content.match(/```json\s*([\s\S]*?)\s*```/i);
                 const jsonText = m ? m[1] : content;
                 const obj = JSON.parse(jsonText);
-                if (obj && obj.user_answer) shown = obj.user_answer;
+                if (obj && obj.system_event === "requirement_generation_confirmation_required") {
+                  console.debug("system_event detected (poll loop): requirement_generation_confirmation_required");
+                  setReqGenConfirmOpen(true);
+                  setIsReqGenBlocking(true);
+                  setWaitingForResponse(false);
+                  setIsLoading(false);
+                  setReqGenStatus("Not Started");
+                  shown = "I've identified documents ready for requirement generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+                } else if (obj && obj.system_event === "requirement_generation_in_progress") {
+                  console.debug("system_event detected (poll loop): requirement_generation_in_progress");
+                  setIsReqGenBlocking(true);
+                  setWaitingForResponse(false);
+                  setIsLoading(false);
+                  setReqGenStatus("In Progress");
+                } else if (obj && obj.user_answer) {
+                  shown = obj.user_answer;
+                }
               } catch {}
-              return { id: `a-${idx}`, type: "assistant", content: shown, timestamp: ts } as Message;
+              const msg: Message = { id: `a-${idx}`, type: "assistant", content: shown, timestamp: ts } as Message;
+              if (entry.traces) {
+                msg.traces = entry.traces as Traces;
+              }
+              return msg;
             });
             
             setMessages(mappedMessages);
@@ -301,6 +416,25 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         formData.append('usecase_id', targetUsecaseId);
 
         await apiPost('/files/upload_file', formData);
+        // Short-lived poll to confirm OCR read
+        let attempts = 0;
+        const checkOcr = async () => {
+          try {
+            const res = await apiGet<any>(`/files/ocr/${targetUsecaseId}/document-markdown`);
+            const hasData = !!res?.combined_markdown;
+            if (hasData || attempts >= 4) {
+              setIsOcrProcessing(false);
+              // Optionally show transient notice
+              if (hasData) {
+                console.debug("OCR completed: documents are readable");
+              }
+              return;
+            }
+          } catch {}
+          attempts += 1;
+          setTimeout(checkOcr, 1500);
+        };
+        setTimeout(checkOcr, 1500);
       }
 
       // Send chat message with file information if available
@@ -341,8 +475,8 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         file: file,
       }));
       setPendingFiles(prev => [...prev, ...selected]);
-
-      // No modal open after upload
+      // Start OCR status banner
+      setIsOcrProcessing(true);
     }
     // Reset the input
     if (fileInputRef.current) {
@@ -421,26 +555,18 @@ export function ChatInterface({ userId, usecaseId }: Props) {
 
   // Sidebar state not needed for removed files tray
 
-  // Modal handlers for processing
-  const handleConfirmProcess = async () => {
-    if (!usecaseId) {
-      setIsProcessModalOpen(false);
-      return;
-    }
-    setHasProcessedInThisChat(true);
-    setIsProcessingInProgress(true);
-    setIsProcessModalOpen(false);
+  function normalizeMarkdownText(text: string): string {
     try {
-      await startProcessingDocuments(usecaseId);
-    } finally {
-      setIsProcessingInProgress(false);
+      let s = text ?? "";
+      // Convert common escaped sequences to real characters for proper MD rendering
+      s = s.replace(/\\n/g, "\n");
+      s = s.replace(/\\t/g, "\t");
+      return s;
+    } catch {
+      return text;
     }
-  };
+  }
 
-  const handleCloseProcessModal = () => {
-    setIsProcessModalOpen(false);
-  };
-  
   return (
     <div className={`
       flex h-full w-full transition-all duration-300
@@ -486,6 +612,14 @@ export function ChatInterface({ userId, usecaseId }: Props) {
           // Chat Messages
           <ScrollArea ref={scrollAreaRef} className="flex-1 pb-24 overflow-y-auto">
             <div className="space-y-4 sm:space-y-6 max-w-full md:max-w-4xl mx-auto px-4 overflow-hidden">
+              {/* Status bar */}
+              {(waitingForResponse || isOcrProcessing || isReqGenBlocking || reqGenStatus === "In Progress") && (
+                <div className="text-xs text-muted-foreground px-2 py-1">
+                  {waitingForResponse && <span>Sending…</span>}
+                  {!waitingForResponse && isOcrProcessing && <span>Reading document(s)…</span>}
+                  {!waitingForResponse && !isOcrProcessing && reqGenStatus === "In Progress" && <span>Requirement generation in progress…</span>}
+                </div>
+              )}
               {messages.map((message) => (
                 <div
                   key={message.id}
@@ -506,9 +640,23 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                         </span>
                       </div>
                     )}
-                    <div className="text-sm whitespace-pre-wrap leading-relaxed break-words overflow-hidden">
-                      {message.content}
+                    <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
+                      {message.type === "assistant" ? (
+                        // IMPORTANT: Do NOT remove markdown rendering for assistant messages. It ensures
+                        // headings, code blocks, tables, line breaks, and raw <br> are rendered correctly.
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          rehypePlugins={[rehypeHighlight]}
+                        >
+                          {normalizeMarkdownText(message.content)}
+                        </ReactMarkdown>
+                      ) : (
+                        <>{message.content}</>
+                      )}
                     </div>
+                    {message.type === "assistant" && message.traces && (
+                      <ChatTrace traces={message.traces as any} />
+                    )}
                     {message.hasPreview && (
                       <Button
                         onClick={() => handleOpenPreview(message.id)}
@@ -567,7 +715,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
               onSend={handleSend}
               onFileUpload={handleFileUpload}
               onKeyPress={handleKeyPress}
-              isDisabled={status === "In Progress" || isLoading}
+              isDisabled={status === "In Progress" || isLoading || reqGenConfirmOpen}
             />
             
             <input
@@ -592,6 +740,65 @@ export function ChatInterface({ userId, usecaseId }: Props) {
           />
         </div>
       )}
+
+      <RequirementsGenerationConfirmModal
+        open={reqGenConfirmOpen}
+        onConfirm={async () => {
+          if (!usecaseId) { setReqGenConfirmOpen(false); return; }
+          setReqGenConfirmOpen(false);
+          setIsReqGenBlocking(true);
+          setIsLoading(false);
+          setWaitingForResponse(false);
+          try {
+            await apiPost(`/requirements/${usecaseId}/generate`, {});
+            // Start polling requirements status every 6s
+            if (reqGenPollTimerRef.current) {
+              window.clearInterval(reqGenPollTimerRef.current);
+            }
+            const startedAt = Date.now();
+            reqGenPollTimerRef.current = window.setInterval(async () => {
+              try {
+                const status = await apiGet<any>(`/requirements/${usecaseId}/status`);
+                const state = String(status?.requirement_generation || "").trim().toLowerCase();
+                console.debug("[req-gen poll] state=", state, "inserted=", status?.total_inserted);
+                if (state === "completed" || state === "failed") {
+                  if (reqGenPollTimerRef.current) {
+                    window.clearInterval(reqGenPollTimerRef.current);
+                    reqGenPollTimerRef.current = null;
+                  }
+                  setIsReqGenBlocking(false);
+                  setWaitingForResponse(false);
+                  setIsLoading(false);
+                  if (state === "completed") toast({ title: "Requirements generated", description: "You can now ask questions about requirements." });
+                  if (state === "failed") toast({ title: "Requirement generation failed", description: "Please try again.", variant: "destructive" as any });
+                }
+                // Max timeout: 10 minutes
+                if (Date.now() - startedAt > 10 * 60 * 1000) {
+                  console.debug("[req-gen poll] stop due to max timeout");
+                  if (reqGenPollTimerRef.current) {
+                    window.clearInterval(reqGenPollTimerRef.current);
+                    reqGenPollTimerRef.current = null;
+                  }
+                  setIsReqGenBlocking(false);
+                  setWaitingForResponse(false);
+                  setIsLoading(false);
+                }
+              } catch (e) {
+                console.error("Error polling requirements status", e);
+              }
+            }, 6000);
+          } catch (e) {
+            console.error("Failed to start requirement generation", e);
+            setIsReqGenBlocking(false);
+          }
+        }}
+        onCancel={() => {
+          setReqGenConfirmOpen(false);
+          setIsReqGenBlocking(false);
+          setWaitingForResponse(false);
+          setIsLoading(false);
+        }}
+      />
 
     </div>
   );
