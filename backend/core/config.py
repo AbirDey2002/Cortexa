@@ -40,6 +40,14 @@ class OCRServiceConfigs:
     OCR_TEXT_LOG_MAX_LENGTH = int(os.getenv("OCR_TEXT_LOG_MAX_LENGTH", "200"))  # Limit logged text length
 
 
+class AgentLogConfigs:
+    # Toggle logging of agent system prompts and raw outputs (ANSI yellow)
+    LOG_AGENT_SYSTEM_PROMPT = os.getenv("LOG_AGENT_SYSTEM_PROMPT", "false").lower() == "true"
+    LOG_AGENT_SYSTEM_PROMPT_MAX_LENGTH = int(os.getenv("LOG_AGENT_SYSTEM_PROMPT_MAX_LENGTH", "10000"))
+    LOG_AGENT_RAW_OUTPUT = os.getenv("LOG_AGENT_RAW_OUTPUT", "false").lower() == "true"
+    LOG_AGENT_RAW_OUTPUT_MAX_LENGTH = int(os.getenv("LOG_AGENT_RAW_OUTPUT_MAX_LENGTH", "20000"))
+
+
 class Settings(BaseSettings):
     _db_config = get_database_config()
     _azure_config = get_azure_config()

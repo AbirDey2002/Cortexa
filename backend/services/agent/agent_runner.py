@@ -19,6 +19,8 @@ from models.file_processing.ocr_records import OCROutputs
 from models.generator.requirement import Requirement
 from services.llm.gemini_conversational.history_manager import manage_chat_history_for_usecase
 from core.env_config import get_env_variable
+from core.config import AgentLogConfigs
+import importlib
 
 logger = logging.getLogger(__name__)
 
@@ -618,58 +620,45 @@ def run_agent_turn(usecase_id, user_message: str) -> Tuple[str, Dict[str, Any]]:
         except Exception:
             pass
 
+        # Prefer file-based prompt if provided to ease multiline editing
+        sys_prompt_file = get_env_variable("AGENT_SYSTEM_PROMPT_FILE", "").strip()
+        system_prompt_value = None
+        if sys_prompt_file:
+            try:
+                import os as _os
+                if _os.path.exists(sys_prompt_file):
+                    with open(sys_prompt_file, "r", encoding="utf-8") as f:
+                        system_prompt_value = f.read()
+            except Exception:
+                system_prompt_value = None
+        if not system_prompt_value:
+            # Try module-based system prompt
+            try:
+                mod_path = get_env_variable("AGENT_SYSTEM_PROMPT_MODULE", "").strip()
+                if mod_path:
+                    mod = importlib.import_module(mod_path)
+                    # Use module docstring or exported variable named 'prompt'
+                    val = getattr(mod, "prompt", None)
+                    if val is None:
+                        val = getattr(mod, "__doc__", "") or ""
+                    system_prompt_value = str(val or "")
+            except Exception:
+                system_prompt_value = None
+        if not system_prompt_value:
+            system_prompt_value = get_env_variable("AGENT_SYSTEM_PROMPT", "")
+        if AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT:
+            try:
+                sp = system_prompt_value or ""
+                if len(sp) > AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT_MAX_LENGTH:
+                    sp = sp[:AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT_MAX_LENGTH] + "... [TRUNCATED]"
+                logger.info("\033[33m[AGENT SYSTEM PROMPT]\n%s\033[0m", sp)
+            except Exception:
+                pass
+
         agent = create_deep_agent(
             tools=tools,
             model=lc_model,
-            system_prompt=(
-                """
-                You are Cortexa — a professional testing assistant. when asked you greet and introduce yourself as Cortexa if not estabilished.
-
-                ### Operating principles
-                - Always call `get_usecase_status` FIRST on every turn to understand the pipeline state.
-                - Use `get_documents_markdown` to read documents. Ground all answers strictly in provided content; do not hallucinate.
-                - Never store raw requirements or full document bodies in final chat history.
-
-                ### Requirement Generation Workflow (CRITICAL)
-
-                **When to call `start_requirement_generation`:**
-                - **ONLY** if ALL conditions are met:
-                  1. `text_extraction` status is "Completed"
-                  2. `requirement_generation` status is "Not Started"
-                  3. User explicitly requests requirements (e.g., "generate requirements", "extract requirements")
-                - This tool call **MUST be your final action**. Do not call any other tools after this.
-                - After calling, respond: "I've requested requirement generation. A confirmation modal will appear. Click 'Yes' to start the background process. You'll be notified when complete."
-
-                **When NOT to call `start_requirement_generation`:**
-                - If `text_extraction` is "Not Started" or "In Progress" → tell user: "Documents are still being processed. Please wait."
-                - If `requirement_generation` is "In Progress" → tell user: "Requirement generation is already running. You'll be notified when complete."
-                - If `requirement_generation` is "Completed" → tell user: "Requirements already generated. Use 'show requirements' or ask questions about them."
-                - If `requirement_generation` is "Failed" → tell user: "Previous generation failed. I can retry if you'd like."
-
-                **Reading Requirements:**
-                - Use `get_requirements` tool ONLY when `requirement_generation="Completed"`
-                - If status is not "Completed", explain current status and what user should do next
-                - Requirements are fetched for ephemeral analysis; do NOT include raw JSON in your response
-
-                ### Response formatting (Markdown)
-                - Use clear headings (###) and short paragraphs for readability.
-                - Prefer bullet lists for steps, rules, and fields.
-                - Use tables when comparing fields, statuses, or matrices improves clarity.
-                - Use fenced code blocks with language tags only for literal snippets (e.g., `json`, `bash`), never for general prose.
-                - Keep answers concise; link follow-ups with suggestions like "Ask me to drill into section X".
-
-                ### When documents are read (`get_documents_markdown`)
-                - Return a structured Markdown summary:
-                  - ### Summary: 3–6 bullets of the most important points
-                  - ### Key Findings: domain facts, constraints, assumptions
-                  - ### Implications for Testing: what to verify next
-                - If content is large, show the top items and mention how to request deeper sections.
-
-                ### Safety and constraints
-                - Do not expose internal tool outputs, raw database rows, or unfiltered large blobs.
-                - Be explicit about unknowns; ask for missing inputs briefly.
-                """
-            ),
+            system_prompt=system_prompt_value,
         )
 
         async def _run() -> str:
@@ -693,24 +682,7 @@ def run_agent_turn(usecase_id, user_message: str) -> Tuple[str, Dict[str, Any]]:
                                 content = getattr(last, "content", None)
                             if content:
                                 final_text = str(content)
-                # Try to capture planning artifacts if exposed by updates stream
-                try:
-                    built_msgs2 = _build_agent_messages(usecase_id, user_message)
-                    _log_agent_input(built_msgs2, label="astream:updates", usecase_id=usecase_id)
-                    async for upd in agent.astream(
-                        {"messages": built_msgs2},
-                        stream_mode="updates",
-                    ):
-                        # Heuristics: capture todos or filesystem ops if present
-                        if isinstance(upd, dict):
-                            if "todos" in upd:
-                                tracer.add_planning_artifact("todos", upd["todos"])
-                            if "filesystem" in upd:
-                                tracer.add_planning_artifact("filesystem_ops", upd["filesystem"]) 
-                            if "subagent" in upd:
-                                tracer.add_planning_artifact("subagents", upd["subagent"]) 
-                except Exception:
-                    pass
+                # Removed second updates stream to avoid duplicate tool executions and logs
             except Exception as e:
                 # If streaming fails, fall back to single invoke
                 built_msgs3 = _build_agent_messages(usecase_id, user_message)
@@ -726,6 +698,14 @@ def run_agent_turn(usecase_id, user_message: str) -> Tuple[str, Dict[str, Any]]:
                             final_text = str(getattr(last, "content", last))
                 else:
                     final_text = str(result)
+            if AgentLogConfigs.LOG_AGENT_RAW_OUTPUT:
+                try:
+                    txt = final_text or ""
+                    if len(txt) > AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH:
+                        txt = txt[:AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH] + "... [TRUNCATED]"
+                    logger.info("\033[33m[AGENT RAW OUTPUT]\n%s\033[0m", txt)
+                except Exception:
+                    pass
             final_text_norm = _normalize_assistant_output(final_text)
             tracer.set_assistant_final(final_text_norm)
             logger.info(_color(f"[AGENT]\n\n{final_text_norm}\n", "32"))

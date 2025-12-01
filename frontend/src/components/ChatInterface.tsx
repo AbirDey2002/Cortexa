@@ -94,6 +94,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
   const [reqGenStatus, setReqGenStatus] = useState<"Not Started" | "In Progress" | "Completed" | "Failed" | "">("");
   const [lastReqGenCheckedUsecaseId, setLastReqGenCheckedUsecaseId] = useState<string | null>(null);
   const [reqGenConfirmed, setReqGenConfirmed] = useState<boolean>(false);
+  const handledModalUsecasesRef = useRef<Record<string, boolean>>({});
   const ocrBannerTimerRef = useRef<number | null>(null);
   const [pendingFiles, setPendingFiles] = useState<SelectedFile[]>([]);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -135,6 +136,10 @@ export function ChatInterface({ userId, usecaseId }: Props) {
           const state = String(rg?.requirement_generation || "").trim().toLowerCase();
           setReqGenStatus((state === "completed") ? "Completed" : (state === "in progress") ? "In Progress" : (state === "failed") ? "Failed" : "Not Started");
           setReqGenConfirmed(!!rg?.requirement_generation_confirmed);
+          // If already confirmed on backend, prevent modal from reopening for this usecase
+          if (rg?.requirement_generation_confirmed) {
+            handledModalUsecasesRef.current[usecaseId] = true;
+          }
           setLastReqGenCheckedUsecaseId(usecaseId);
           if (rg?.requirement_generation === "In Progress") {
             setIsReqGenBlocking(true);
@@ -182,16 +187,18 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             const jsonText = m ? m[1] : content;
             const obj = JSON.parse(jsonText);
             if (obj && obj.system_event === "requirement_generation_confirmation_required") {
-              // Optional guard: do not re-open if consent already recorded
-              if (lastReqGenCheckedUsecaseId === usecaseId && reqGenConfirmed) {
-                // consent already recorded; ignore
+              // Only react to fresh latest assistant message for this usecase, and if not already handled/confirmed
+              const isLatest = idx === sortedHistory.length - 1;
+              const alreadyHandled = !!handledModalUsecasesRef.current[usecaseId];
+              if (!isLatest || alreadyHandled || reqGenConfirmed) {
+                // ignore historical or already-handled events
               } else {
-              console.debug("system_event detected: requirement_generation_confirmation_required");
-              setReqGenConfirmOpen(true);
-              setIsReqGenBlocking(true);
-              setWaitingForResponse(false);
-              setIsLoading(false);
-              shown = "I've identified documents ready for requirement generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+                console.debug("system_event detected: requirement_generation_confirmation_required");
+                setReqGenConfirmOpen(true);
+                setIsReqGenBlocking(true);
+                setWaitingForResponse(false);
+                setIsLoading(false);
+                shown = "I've identified documents ready for requirement generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
               }
             } else if (obj && obj.system_event === "requirement_generation_in_progress") {
               console.debug("system_event detected: requirement_generation_in_progress");
@@ -304,13 +311,17 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                 const jsonText = m ? m[1] : content;
                 const obj = JSON.parse(jsonText);
                 if (obj && obj.system_event === "requirement_generation_confirmation_required") {
-                  console.debug("system_event detected (poll loop): requirement_generation_confirmation_required");
-                  setReqGenConfirmOpen(true);
-                  setIsReqGenBlocking(true);
-                  setWaitingForResponse(false);
-                  setIsLoading(false);
-                  setReqGenStatus("Not Started");
-                  shown = "I've identified documents ready for requirement generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+                  const isLatest = idx === sortedHistory.length - 1;
+                  const alreadyHandled = !!handledModalUsecasesRef.current[usecaseId!];
+                  if (isLatest && !alreadyHandled && !reqGenConfirmed) {
+                    console.debug("system_event detected (poll loop): requirement_generation_confirmation_required");
+                    setReqGenConfirmOpen(true);
+                    setIsReqGenBlocking(true);
+                    setWaitingForResponse(false);
+                    setIsLoading(false);
+                    setReqGenStatus("Not Started");
+                    shown = "I've identified documents ready for requirement generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+                  }
                 } else if (obj && obj.system_event === "requirement_generation_in_progress") {
                   console.debug("system_event detected (poll loop): requirement_generation_in_progress");
                   setIsReqGenBlocking(true);
@@ -454,7 +465,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
       
       // Notify the parent component that a message was sent to refresh the sidebar
       if (window.dispatchEvent) {
-        window.dispatchEvent(new CustomEvent('chat-updated', { detail: { usecaseId } }));
+        window.dispatchEvent(new CustomEvent('chat-updated', { detail: { usecaseId: targetUsecaseId } }));
       }
     } catch (e) {
       console.error("Error sending message:", e);
@@ -745,6 +756,8 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         open={reqGenConfirmOpen}
         onConfirm={async () => {
           if (!usecaseId) { setReqGenConfirmOpen(false); return; }
+          // Optimistically prevent re-opening for this usecase in current session
+          handledModalUsecasesRef.current[usecaseId] = true;
           setReqGenConfirmOpen(false);
           setIsReqGenBlocking(true);
           setIsLoading(false);
