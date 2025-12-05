@@ -12,6 +12,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { RequirementsGenerationConfirmModal } from "@/components/chat/RequirementsGenerationConfirmModal";
+import { PdfContentMessage } from "@/components/chat/PdfContentMessage";
 
 function extractMainTextFromStored(raw: any): string {
   try {
@@ -101,6 +102,12 @@ export function ChatInterface({ userId, usecaseId }: Props) {
   const [previewContent, setPreviewContent] = useState("");
   const [previewTitle, setPreviewTitle] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pdfContentMessages, setPdfContentMessages] = useState<Array<{
+    fileId: string;
+    fileName: string;
+    pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+    timestamp: Date;
+  }>>([]);
   // Removed files tray and processing modal state
   const [status, setStatus] = useState<string>("Completed");
   const [waitingForResponse, setWaitingForResponse] = useState(false);
@@ -122,6 +129,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
     async function load() {
       if (!usecaseId) {
         setMessages([]);
+        setPdfContentMessages([]);
         setReqGenStatus("");
         setLastReqGenCheckedUsecaseId(null);
         return;
@@ -179,6 +187,11 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             return message;
           }
           
+          // Skip [modal] marker entries - they will be processed separately
+          if (entry.modal) {
+            return null;
+          }
+          
           const content = entry.system;
           // agent output contains JSON; show only user_answer if present
           let shown = extractMainTextFromStored(content);
@@ -215,15 +228,57 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             msg.traces = entry.traces as Traces;
           }
           return msg;
-        });
+        }).filter((msg): msg is Message => msg !== null);
         
         setMessages(mappedMessages);
+        
+        // Check for [modal] markers in chat history and fetch content
+        const modalMarkers = sortedHistory.filter((entry: any) => entry && entry.modal);
+        if (modalMarkers.length > 0) {
+          // Fetch PDF content for all markers
+          (async () => {
+            const pdfContents: Array<{
+              fileId: string;
+              fileName: string;
+              pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+              timestamp: Date;
+            }> = [];
+            
+            for (const markerEntry of modalMarkers) {
+              const modal = markerEntry.modal;
+              if (modal && modal.file_id) {
+                try {
+                  const fileContent = await apiGet<any>(`/files/file_contents/retrieval/${modal.file_id}`);
+                  if (fileContent && fileContent.pages && fileContent.pages.length > 0) {
+                    pdfContents.push({
+                      fileId: fileContent.file_id,
+                      fileName: fileContent.file_name,
+                      pages: fileContent.pages,
+                      timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
+                    });
+                  }
+                } catch (error) {
+                  console.error("Error retrieving PDF content from [modal] marker:", error);
+                }
+              }
+            }
+            
+            if (pdfContents.length > 0) {
+              setPdfContentMessages(pdfContents);
+            } else {
+              setPdfContentMessages([]);
+            }
+          })();
+        } else {
+          setPdfContentMessages([]);
+        }
         
         // Schedule scroll to bottom after messages are rendered
         setTimeout(scrollToBottom, 100);
       } catch (e) {
         console.error("Error loading chat history:", e);
         setMessages([]);
+        setPdfContentMessages([]);
       }
     }
     load();
@@ -284,8 +339,47 @@ export function ChatInterface({ userId, usecaseId }: Props) {
               return tsA - tsB;
             });
             
+            // Check for [modal] markers in chat history and fetch content
+            const modalMarkers = sortedHistory.filter((entry: any) => entry && entry.modal);
+            if (modalMarkers.length > 0) {
+              // Fetch PDF content for all markers
+              const pdfContents: Array<{
+                fileId: string;
+                fileName: string;
+                pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+                timestamp: Date;
+              }> = [];
+              
+              for (const markerEntry of modalMarkers) {
+                const modal = markerEntry.modal;
+                if (modal && modal.file_id) {
+                  try {
+                    const fileContent = await apiGet<any>(`/files/file_contents/retrieval/${modal.file_id}`);
+                    if (fileContent && fileContent.pages && fileContent.pages.length > 0) {
+                      pdfContents.push({
+                        fileId: fileContent.file_id,
+                        fileName: fileContent.file_name,
+                        pages: fileContent.pages,
+                        timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
+                      });
+                    }
+                  } catch (error) {
+                    console.error("Error retrieving PDF content from [modal] marker during polling:", error);
+                  }
+                }
+              }
+              
+              if (pdfContents.length > 0) {
+                setPdfContentMessages(pdfContents);
+              }
+            }
+            
             const mappedMessages = sortedHistory.map((entry, idx) => {
               const ts = new Date(entry.timestamp || Date.now());
+              // Skip [modal] marker entries - they will be processed separately
+              if (entry.modal) {
+                return null;
+              }
               if (entry.user !== undefined) {
                 const message: Message = { 
                   id: `u-${idx}`, 
@@ -337,7 +431,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                 msg.traces = entry.traces as Traces;
               }
               return msg;
-            });
+            }).filter((msg): msg is Message => msg !== null);
             
             setMessages(mappedMessages);
             
@@ -426,7 +520,12 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         formData.append('email', 'abir.dey@intellectdesign.com');
         formData.append('usecase_id', targetUsecaseId);
 
-        await apiPost('/files/upload_file', formData);
+        const uploadResponse = await apiPost<any[]>('/files/file_contents/upload', formData);
+        
+        // Don't add PDF content immediately - wait for modal marker from backend
+        // The modal marker will be created by the agent tool and will appear in polled history
+        // This ensures correct timestamp ordering and consistency between streaming and reload
+        
         // Short-lived poll to confirm OCR read
         let attempts = 0;
         const checkOcr = async () => {
@@ -631,60 +730,125 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                   {!waitingForResponse && !isOcrProcessing && reqGenStatus === "In Progress" && <span>Requirement generation in progress…</span>}
                 </div>
               )}
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
-                      message.type === "user"
-                        ? "bg-chat-user border border-border ml-auto"
-                        : "bg-chat-assistant border border-border mr-auto"
-                    }`}
-                  >
-                    {message.file && (
-                      <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-accent/50 border border-border">
-                        <FileText className="w-4 h-4 text-accent-foreground" />
-                        <span className="text-sm font-medium text-accent-foreground">
-                          {message.file.name}
-                        </span>
-                      </div>
-                    )}
-                    <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
-                      {message.type === "assistant" ? (
-                        // IMPORTANT: Do NOT remove markdown rendering for assistant messages. It ensures
-                        // headings, code blocks, tables, line breaks, and raw <br> are rendered correctly.
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          rehypePlugins={[rehypeHighlight]}
-                        >
-                          {normalizeMarkdownText(message.content)}
-                        </ReactMarkdown>
-                      ) : (
-                        <>{message.content}</>
-                      )}
-                    </div>
-                    {message.type === "assistant" && message.traces && (
-                      <ChatTrace traces={message.traces as any} />
-                    )}
-                    {message.hasPreview && (
-                      <Button
-                        onClick={() => handleOpenPreview(message.id)}
-                        variant="outline" 
-                        size="sm"
-                        className="mt-3 h-8 text-xs gap-2 hover:bg-gray-700 hover:text-gray-100"
+              {(() => {
+                // Combine messages and PDF content messages, sorted by timestamp
+                // Group PDFs by timestamp proximity (within 5 seconds)
+                const groupedPdfs: Array<Array<{
+                  fileId: string;
+                  fileName: string;
+                  pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+                  timestamp: Date;
+                }>> = [];
+                
+                const sortedPdfs = [...pdfContentMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+                
+                sortedPdfs.forEach((pdf) => {
+                  // Find a group where this PDF's timestamp is within 5 seconds of any PDF in the group
+                  let addedToGroup = false;
+                  for (const group of groupedPdfs) {
+                    const groupTimestamps = group.map(p => p.timestamp.getTime());
+                    const minTime = Math.min(...groupTimestamps);
+                    const maxTime = Math.max(...groupTimestamps);
+                    const pdfTime = pdf.timestamp.getTime();
+                    
+                    // Check if PDF is within 5 seconds (5000ms) of the group
+                    if (Math.abs(pdfTime - minTime) <= 5000 || Math.abs(pdfTime - maxTime) <= 5000) {
+                      group.push(pdf);
+                      addedToGroup = true;
+                      break;
+                    }
+                  }
+                  
+                  // If not added to any group, create a new group
+                  if (!addedToGroup) {
+                    groupedPdfs.push([pdf]);
+                  }
+                });
+                
+                // Create items for rendering: messages and grouped PDFs
+                const allItems: Array<{
+                  type: 'message' | 'pdf-group';
+                  timestamp: Date;
+                  data: Message | Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }>;
+                }> = [
+                  ...messages.map(m => ({ type: 'message' as const, timestamp: m.timestamp, data: m })),
+                  ...groupedPdfs.map(group => ({
+                    type: 'pdf-group' as const,
+                    timestamp: group[0].timestamp, // Use first PDF's timestamp for sorting
+                    data: group.map(p => ({
+                      fileId: p.fileId,
+                      fileName: p.fileName,
+                      pages: p.pages
+                    }))
+                  }))
+                ].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+                
+                return allItems.map((item, idx) => {
+                  if (item.type === 'pdf-group') {
+                    const pdfFiles = item.data as Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }>;
+                    return (
+                      <PdfContentMessage
+                        key={`pdf-group-${idx}-${pdfFiles.map(f => f.fileId).join('-')}`}
+                        files={pdfFiles}
+                      />
+                    );
+                  } else {
+                    const message = item.data as Message;
+                    return (
+                      <div
+                        key={message.id}
+                        className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
                       >
-                        <ExternalLink className="w-3 h-3" />
-                        Open in Preview
-                      </Button>
-                    )}
-                    <div className="text-xs text-muted-foreground mt-2">
-                      {message.timestamp.toLocaleTimeString()}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                        <div
+                          className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
+                            message.type === "user"
+                              ? "bg-chat-user border border-border ml-auto"
+                              : "bg-chat-assistant border border-border mr-auto"
+                          }`}
+                        >
+                          {message.file && (
+                            <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-accent/50 border border-border">
+                              <FileText className="w-4 h-4 text-accent-foreground" />
+                              <span className="text-sm font-medium text-accent-foreground">
+                                {message.file.name}
+                              </span>
+                            </div>
+                          )}
+                          <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
+                            {message.type === "assistant" ? (
+                              <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                rehypePlugins={[rehypeHighlight]}
+                              >
+                                {normalizeMarkdownText(message.content)}
+                              </ReactMarkdown>
+                            ) : (
+                              <>{message.content}</>
+                            )}
+                          </div>
+                          {message.type === "assistant" && message.traces && (
+                            <ChatTrace traces={message.traces as any} />
+                          )}
+                          {message.hasPreview && (
+                            <Button
+                              onClick={() => handleOpenPreview(message.id)}
+                              variant="outline" 
+                              size="sm"
+                              className="mt-3 h-8 text-xs gap-2 hover:bg-gray-700 hover:text-gray-100"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              Open in Preview
+                            </Button>
+                          )}
+                          <div className="text-xs text-muted-foreground mt-2">
+                            {message.timestamp.toLocaleTimeString()}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+                });
+              })()}
               
               {isLoading && (
                 <div className="flex justify-start">

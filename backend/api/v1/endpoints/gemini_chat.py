@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import uuid
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 import hashlib
 import json
@@ -214,11 +214,59 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, ti
 
                 # All tool orchestration handled inside deep agent runner
 
+                # PDF markers are now created during file upload, not here
+                # This ensures correct ordering: User message → PDF marker → Agent response
+
                 # Persist full record (system text + structured traces)
                 system_entry = {"system": assistant_text, "timestamp": _utc_now_iso(), "traces": traces}
-                updated_history = [system_entry] + (updated_history or [])
-
-                record.chat_history = updated_history
+                
+                # Re-read chat_history from DB to get any [modal] markers created by tools during execution
+                db.refresh(record)
+                current_db_history = record.chat_history or []
+                
+                # Find [modal] markers that were created during this turn (after user message, before agent response)
+                modal_markers = []
+                user_timestamp = None
+                for entry in current_db_history:
+                    if isinstance(entry, dict) and "user" in entry:
+                        user_timestamp = entry.get("timestamp")
+                        break
+                
+                # Collect modal markers that should be preserved (created after user message)
+                for entry in current_db_history:
+                    if isinstance(entry, dict) and "modal" in entry:
+                        modal_timestamp = entry.get("timestamp") or entry.get("modal", {}).get("timestamp", "")
+                        if modal_timestamp and user_timestamp:
+                            try:
+                                from datetime import datetime, timezone
+                                modal_time = datetime.fromisoformat(modal_timestamp.replace('Z', '+00:00'))
+                                user_time = datetime.fromisoformat(user_timestamp.replace('Z', '+00:00'))
+                                # Modal marker should be after user message (within reasonable time window of 30 seconds)
+                                if modal_time >= user_time and (modal_time - user_time).total_seconds() < 30:
+                                    modal_markers.append(entry)
+                            except:
+                                # If timestamp parsing fails, include the marker anyway if it's recent
+                                modal_markers.append(entry)
+                        else:
+                            # Include if no timestamps available (shouldn't happen, but be safe)
+                            modal_markers.append(entry)
+                
+                # Build final history: agent response first, then modal markers, then rest
+                # History is stored newest-first: [agent, modal, user, ...]
+                final_history = [system_entry]
+                final_history.extend(modal_markers)
+                
+                # Add the rest of updated_history (from history manager), excluding duplicates
+                # updated_history already has the user message and older entries
+                seen_modal_file_ids = {m.get("modal", {}).get("file_id") for m in modal_markers if isinstance(m, dict) and "modal" in m}
+                for entry in updated_history or []:
+                    # Skip if it's a modal marker we already added
+                    if isinstance(entry, dict) and "modal" in entry:
+                        if entry.get("modal", {}).get("file_id") in seen_modal_file_ids:
+                            continue
+                    final_history.append(entry)
+                
+                record.chat_history = final_history
                 record.chat_summary = updated_summary
 
                 db.commit()
@@ -381,6 +429,9 @@ async def append_gemini_chat_message(usecase_id: uuid.UUID, payload: ChatMessage
     except Exception as e:
         # Do not fail chat append if file processing fails
         logging.getLogger(__name__).error(f"Error processing uploaded files for usecase {usecase_id}: {e}")
+    
+    # PDF markers are now created by Tool 2 (show_extracted_text) when agent calls it
+    # No automatic marker creation here - markers only created when user explicitly asks to see PDF
     
     # Fire background inference with Gemini
     background_tasks.add_task(_run_gemini_chat_inference_sync, usecase_id, payload.content)

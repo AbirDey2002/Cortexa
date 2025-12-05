@@ -6,6 +6,7 @@ import asyncio
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Optional, Callable
+from uuid import UUID
 try:
     from langchain_core.tools import tool as lc_tool
 except ImportError:
@@ -15,7 +16,8 @@ from sqlalchemy import text
 
 from db.session import get_db_context
 from models.usecase.usecase import UsecaseMetadata
-from models.file_processing.ocr_records import OCROutputs
+from models.file_processing.ocr_records import OCROutputs, OCRInfo
+from models.file_processing.file_metadata import FileMetadata
 from models.generator.requirement import Requirement
 from services.llm.gemini_conversational.history_manager import manage_chat_history_for_usecase
 from core.env_config import get_env_variable
@@ -187,19 +189,37 @@ def _build_agent_messages(usecase_id: Any, user_message: str) -> List[Dict[str, 
                 recent_portion = history
             # Convert to chronological order
             chronological = list(reversed(recent_portion))
+            current_user_message_found = False
             for entry in chronological:
                 if isinstance(entry, dict) and "user" in entry:
                     content = str(entry.get("user") or "")[:4000]
+                    # Check if this is the current user message (most recent one)
+                    if not current_user_message_found and content.strip() == user_message.strip():
+                        current_user_message_found = True
+                    # Include file information if present
+                    files = entry.get("files", [])
+                    if files:
+                        file_names = [f.get("name", "unknown") for f in files if isinstance(f, dict)]
+                        if file_names:
+                            content += f"\n\n[Files uploaded: {', '.join(file_names)}]"
                     if content:
                         messages.append({"role": "user", "content": content})
+                elif isinstance(entry, dict) and "modal" in entry:
+                    # Convert [modal] marker to system message for agent context
+                    # NO TEXT DATA in marker, only file_id reference
+                    modal_data = entry.get("modal", {})
+                    file_name = modal_data.get("file_name", "the document")
+                    system_msg = f"PDF content for '{file_name}' has been displayed to the user above in the chat. The user can see the extracted OCR text from this document. You can reference this displayed content in your responses."
+                    messages.append({"role": "system", "content": system_msg})
                 elif isinstance(entry, dict) and "system" in entry:
                     text = _extract_assistant_text(entry.get("system"))
                     if text:
                         messages.append({"role": "assistant", "content": text})
     except Exception:
         pass
-    # Append current user message
-    messages.append({"role": "user", "content": user_message})
+    # Append current user message only if it wasn't found in history
+    if not current_user_message_found:
+        messages.append({"role": "user", "content": user_message})
     return messages
 
 
@@ -292,6 +312,70 @@ def tool_get_usecase_status(usecase_id) -> Dict[str, Any]:
             "test_case_generation": rec.test_case_generation,
             "requirement_generation_confirmed": getattr(rec, "requirement_generation_confirmed", False),
         }
+
+
+def tool_check_text_extraction_status(file_id: str = None, usecase_id: UUID = None) -> Dict[str, Any]:
+    """Check text extraction status. If file_id provided, check that file. If usecase_id provided, check all files in usecase."""
+    with get_db_context() as db:
+        if file_id:
+            try:
+                file_uuid = UUID(file_id) if isinstance(file_id, str) else file_id
+            except (ValueError, TypeError):
+                return {"error": "invalid_file_id", "message": f"Invalid file_id format: {file_id}"}
+            
+            # Check specific file
+            file_metadata = db.query(FileMetadata).filter(FileMetadata.file_id == file_uuid).first()
+            if not file_metadata:
+                return {"error": "file_not_found", "message": f"File with id {file_id} not found"}
+            
+            usecase = db.query(UsecaseMetadata).filter(
+                UsecaseMetadata.usecase_id == file_metadata.usecase_id,
+                UsecaseMetadata.is_deleted == False,
+            ).first()
+            
+            if not usecase:
+                return {"error": "usecase_not_found"}
+            
+            ocr_info = db.query(OCRInfo).filter(OCRInfo.file_id == file_uuid).first()
+            text_extraction_status = usecase.text_extraction or "Not Started"
+            
+            return {
+                "file_id": str(file_uuid),
+                "file_name": file_metadata.file_name,
+                "text_extraction": text_extraction_status,
+                "total_pages": ocr_info.total_pages if ocr_info else 0,
+                "completed_pages": ocr_info.completed_pages if ocr_info else 0,
+            }
+        elif usecase_id:
+            # Check all files in usecase
+            usecase = db.query(UsecaseMetadata).filter(
+                UsecaseMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.is_deleted == False,
+            ).first()
+            
+            if not usecase:
+                return {"error": "usecase_not_found"}
+            
+            text_extraction_status = usecase.text_extraction or "Not Started"
+            
+            files = db.query(FileMetadata).filter(FileMetadata.usecase_id == usecase_id).all()
+            file_statuses = []
+            for file_meta in files:
+                ocr_info = db.query(OCRInfo).filter(OCRInfo.file_id == file_meta.file_id).first()
+                file_statuses.append({
+                    "file_id": str(file_meta.file_id),
+                    "file_name": file_meta.file_name,
+                    "total_pages": ocr_info.total_pages if ocr_info else 0,
+                    "completed_pages": ocr_info.completed_pages if ocr_info else 0,
+                })
+            
+            return {
+                "usecase_id": str(usecase_id),
+                "text_extraction": text_extraction_status,
+                "files": file_statuses,
+            }
+        else:
+            return {"error": "missing_parameter", "message": "Either file_id or usecase_id must be provided"}
 
 
 def tool_get_documents_markdown(usecase_id) -> Dict[str, Any]:
@@ -414,6 +498,254 @@ def tool_get_requirements(usecase_id) -> Dict[str, Any]:
             "requirements": payload,
             "count": len(payload),
             "message": f"Fetched {len(payload)} requirements for analysis."
+        }
+
+
+def tool_show_extracted_text(file_id: str = None, file_name: str = None, usecase_id: UUID = None) -> Dict[str, Any]:
+    """Create [modal] placeholder in chat_history. Only call when user asks to see PDF.
+    
+    If file_id is not provided, uses file_name to match, or falls back to most recent file.
+    Priority: file_id > file_name match > most recent file
+    """
+    with get_db_context() as db:
+        # Verify usecase exists
+        usecase = db.query(UsecaseMetadata).filter(
+            UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.is_deleted == False,
+        ).first()
+        
+        if not usecase:
+            return {"error": "usecase_not_found"}
+        
+        # Check if text extraction is completed
+        text_extraction_status = usecase.text_extraction or "Not Started"
+        if text_extraction_status != "Completed":
+            return {
+                "error": "text_extraction_not_complete",
+                "message": f"Text extraction is '{text_extraction_status}'. Please wait for OCR to complete.",
+                "text_extraction": text_extraction_status
+            }
+        
+        file_metadata = None
+        file_uuid = None
+        
+        # Priority 1: Use file_id if provided and valid
+        if file_id:
+            try:
+                file_uuid = UUID(file_id) if isinstance(file_id, str) else file_id
+                file_metadata = db.query(FileMetadata).filter(
+                    FileMetadata.file_id == file_uuid
+                ).first()
+                
+                if file_metadata and file_metadata.usecase_id == usecase_id and not file_metadata.is_deleted:
+                    # Valid file_id found
+                    pass
+                else:
+                    file_metadata = None
+                    file_uuid = None
+            except (ValueError, TypeError):
+                # Invalid file_id format, will try file_name or fallback
+                file_metadata = None
+                file_uuid = None
+        
+        # Priority 2: Use file_name to match if file_id not available
+        if not file_metadata and file_name:
+            # Try exact match first (case-insensitive)
+            file_metadata = db.query(FileMetadata).join(
+                OCRInfo, FileMetadata.file_id == OCRInfo.file_id
+            ).filter(
+                FileMetadata.usecase_id == usecase_id,
+                FileMetadata.is_deleted == False,
+                FileMetadata.file_name.ilike(file_name)
+            ).order_by(FileMetadata.created_at.desc()).first()
+            
+            # If no exact match, try partial match
+            if not file_metadata:
+                file_metadata = db.query(FileMetadata).join(
+                    OCRInfo, FileMetadata.file_id == OCRInfo.file_id
+                ).filter(
+                    FileMetadata.usecase_id == usecase_id,
+                    FileMetadata.is_deleted == False,
+                    FileMetadata.file_name.ilike(f"%{file_name}%")
+                ).order_by(FileMetadata.created_at.desc()).first()
+            
+            if file_metadata:
+                file_uuid = file_metadata.file_id
+        
+        # Priority 3: Fallback to most recent file
+        if not file_metadata:
+            # Find most recent file with OCR info in this usecase (order by created_at DESC)
+            file_metadata = db.query(FileMetadata).join(
+                OCRInfo, FileMetadata.file_id == OCRInfo.file_id
+            ).filter(
+                FileMetadata.usecase_id == usecase_id,
+                FileMetadata.is_deleted == False
+            ).order_by(FileMetadata.created_at.desc()).first()
+            
+            if not file_metadata:
+                return {
+                    "error": "no_files_found",
+                    "message": "No files with completed extraction found in this usecase."
+                }
+            file_uuid = file_metadata.file_id
+        
+        # Verify OCR info exists
+        ocr_info = db.query(OCRInfo).filter(OCRInfo.file_id == file_uuid).first()
+        if not ocr_info:
+            return {"error": "ocr_info_not_found", "message": f"OCR information not found for file {file_metadata.file_name if file_metadata else 'unknown'}"}
+        
+        # Get current chat history
+        chat_history = usecase.chat_history or []
+        
+        # Find the user message we just added (should be first or near the beginning)
+        user_message = None
+        user_index = -1
+        for i, entry in enumerate(chat_history):
+            if isinstance(entry, dict) and "user" in entry:
+                user_message = entry
+                user_index = i
+                break
+        
+        if not user_message or user_index < 0:
+            # If no user message found, append to end
+            from datetime import datetime, timezone
+            modal_timestamp = datetime.now(timezone.utc).isoformat()
+        else:
+            # Parse user message timestamp and add 1 second
+            try:
+                from datetime import datetime, timezone
+                user_timestamp_str = user_message.get("timestamp", "")
+                if user_timestamp_str:
+                    user_timestamp = datetime.fromisoformat(user_timestamp_str.replace('Z', '+00:00'))
+                    modal_timestamp = datetime.fromtimestamp(user_timestamp.timestamp() + 1, tz=timezone.utc).isoformat()
+                else:
+                    modal_timestamp = datetime.now(timezone.utc).isoformat()
+            except Exception as e:
+                logger.warning(_color(f"[SHOW-EXTRACTED-TEXT] Error parsing timestamp: {e}", "33"))
+                from datetime import datetime, timezone
+                modal_timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Create [modal] marker - NO TEXT DATA, only file_id reference
+        # Include top-level timestamp for proper sorting in chat history
+        modal_marker = {
+            "modal": {
+                "file_id": str(file_uuid),
+                "file_name": file_metadata.file_name,
+                "timestamp": modal_timestamp
+            },
+            "timestamp": modal_timestamp
+        }
+        
+        # Insert marker right after user message (or at beginning if no user message)
+        if user_index >= 0:
+            updated_history = (
+                chat_history[:user_index + 1] + 
+                [modal_marker] + 
+                chat_history[user_index + 1:]
+            )
+        else:
+            updated_history = [modal_marker] + chat_history
+        
+        # Update chat history
+        usecase.chat_history = updated_history
+        db.commit()
+        
+        logger.info(_color(
+            f"[SHOW-EXTRACTED-TEXT] Created modal marker for file_id={file_id} file_name={file_metadata.file_name}",
+            "34"
+        ))
+        
+        return {
+            "status": "success",
+            "message": f"PDF content for '{file_metadata.file_name}' will be displayed above.",
+            "file_id": str(file_uuid),
+            "file_name": file_metadata.file_name
+        }
+
+
+def tool_read_extracted_text(file_id: str) -> Dict[str, Any]:
+    """Read full OCR text from database. Returns complete, non-truncated text for agent analysis."""
+    try:
+        file_uuid = UUID(file_id) if isinstance(file_id, str) else file_id
+    except (ValueError, TypeError):
+        return {"error": "invalid_file_id", "message": f"Invalid file_id format: {file_id}"}
+    
+    with get_db_context() as db:
+        # Get file metadata
+        file_metadata = db.query(FileMetadata).filter(
+            FileMetadata.file_id == file_uuid
+        ).first()
+        
+        if not file_metadata:
+            logger.warning(_color(f"[READ-EXTRACTED-TEXT] file not found: {file_id}", "31"))
+            return {"error": "file_not_found", "message": f"File with id {file_id} not found"}
+        
+        # Check if text extraction is completed for the usecase
+        usecase = db.query(UsecaseMetadata).filter(
+            UsecaseMetadata.usecase_id == file_metadata.usecase_id,
+            UsecaseMetadata.is_deleted == False,
+        ).first()
+        
+        if not usecase:
+            return {"error": "usecase_not_found"}
+        
+        text_extraction_status = usecase.text_extraction or "Not Started"
+        if text_extraction_status != "Completed":
+            return {
+                "error": "text_extraction_not_complete",
+                "message": f"Text extraction is '{text_extraction_status}'. Please wait for OCR to complete.",
+                "text_extraction": text_extraction_status
+            }
+        
+        # Get OCR info first (prefer pages_json)
+        ocr_info = db.query(OCRInfo).filter(OCRInfo.file_id == file_uuid).first()
+        
+        if ocr_info and ocr_info.pages_json:
+            # Use pages_json if available
+            pages_json = ocr_info.pages_json if isinstance(ocr_info.pages_json, dict) else {}
+            pages = []
+            for page_num_str, page_markdown in sorted(pages_json.items(), key=lambda x: int(x[0])):
+                pages.append({
+                    "page_number": int(page_num_str),
+                    "markdown": page_markdown or "",
+                    "is_completed": True
+                })
+        else:
+            # Fallback to OCROutputs
+            ocr_outputs = db.query(OCROutputs).filter(
+                OCROutputs.file_id == file_uuid
+            ).order_by(OCROutputs.page_number.asc()).all()
+            
+            pages = []
+            for output in ocr_outputs:
+                pages.append({
+                    "page_number": output.page_number,
+                    "markdown": output.page_text or "",
+                    "is_completed": output.is_completed or False
+                })
+        
+        # Build combined markdown (full text, no truncation)
+        combined_markdown = "\n\n".join([
+            f"## Page {p['page_number']}\n\n{p['markdown']}"
+            for p in pages
+        ])
+        
+        total_chars = len(combined_markdown)
+        logger.info(_color(
+            f"[READ-EXTRACTED-TEXT] file_id={file_id} file_name={file_metadata.file_name} "
+            f"total_pages={len(pages)} total_chars={total_chars}",
+            "34"
+        ))
+        
+        # Return FULL text - no truncation for agent
+        return {
+            "file_id": str(file_uuid),
+            "file_name": file_metadata.file_name,
+            "total_pages": len(pages),
+            "pages": pages,
+            "combined_markdown": combined_markdown,
+            "total_chars": total_chars,
+            "message": f"Retrieved full OCR text from '{file_metadata.file_name}' ({len(pages)} pages, {total_chars} characters)."
         }
 
 
@@ -542,11 +874,230 @@ def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
             logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
             raise
 
+    @lc_tool
+    async def check_text_extraction_status(file_id: str = None) -> Dict[str, Any]:
+        """
+        Check text extraction status. If file_id provided, check that file. If not provided, check all files in usecase.
+        Call this tool to verify extraction status after file upload.
+        Returns: extraction status (Not Started, In Progress, Completed, Failed), file_id, file_name, page counts.
+        """
+        name = "check_text_extraction_status"
+        entry = tracer.start_tool(name, args_preview=f'{{"file_id": "{file_id if file_id else "usecase"}"}}')
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] file_id={file_id} usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_check_text_extraction_status, file_id, usecase_id)
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, True, result_preview=str(result.get("text_extraction", "unknown")), duration_ms=duration_ms)
+            try:
+                import json as _json
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
+    @lc_tool
+    async def show_extracted_text(file_id: str = None, file_name: str = None) -> Dict[str, Any]:
+        """
+        Create [modal] placeholder in chat_history to display PDF content to user.
+        ONLY call when user explicitly requests to see/view/display PDF content.
+        User phrases: "show me the PDF", "display the document", "what's in the file", "open the PDF", "show the extracted text", "look into this document", "show this document", "show again", "show me the [document name]".
+        Conditions: text_extraction must be "Completed", user must explicitly ask to see content.
+        You can call this tool multiple times if the user requests to see content again (e.g., "show again", "show me the document again").
+        The tool will always create a modal marker when called, allowing users to re-display content.
+        If file_id is not provided, the tool will try to match by file_name (extracted from user text or attached files), or use the most recent file.
+        After calling, respond: "I've retrieved the PDF content. The document will be displayed above for you to review."
+        Do NOT include the actual text content in your response.
+        """
+        name = "show_extracted_text"
+        
+        # Extract file names from most recent user message if file_name not provided
+        extracted_file_name = file_name
+        if not extracted_file_name:
+            try:
+                with get_db_context() as db:
+                    usecase = db.query(UsecaseMetadata).filter(
+                        UsecaseMetadata.usecase_id == usecase_id,
+                        UsecaseMetadata.is_deleted == False,
+                    ).first()
+                    if usecase and usecase.chat_history:
+                        # Get all available files in the usecase for matching
+                        available_files = db.query(FileMetadata).join(
+                            OCRInfo, FileMetadata.file_id == OCRInfo.file_id
+                        ).filter(
+                            FileMetadata.usecase_id == usecase_id,
+                            FileMetadata.is_deleted == False
+                        ).all()
+                        available_file_names = [f.file_name for f in available_files] if available_files else []
+                        
+                        # Find most recent user message
+                        for entry in usecase.chat_history:
+                            if isinstance(entry, dict) and "user" in entry:
+                                # Priority 1: Check attached files
+                                files = entry.get("files", [])
+                                if files and len(files) > 0:
+                                    # Use the first file name from the most recent message
+                                    first_file = files[0] if isinstance(files[0], dict) else {}
+                                    extracted_file_name = first_file.get("name", "")
+                                    if extracted_file_name:
+                                        break
+                                
+                                # Priority 2: Extract file name from user's text message
+                                if not extracted_file_name:
+                                    user_text = str(entry.get("user", ""))
+                                    user_text_lower = user_text.lower()
+                                    import re
+                                    
+                                    # Improved patterns to extract file names from user text
+                                    # These patterns capture the file name/keywords before common suffixes
+                                    patterns = [
+                                        # "display the contents of Magic Submission document" -> "Magic Submission"
+                                        r"(?:display|show|open|view)\s+(?:me\s+)?(?:the\s+)?(?:contents?\s+of\s+)?(?:the\s+)?['\"]?([^'\"]+?)(?:\s+document|\s+file|\s+pdf|please|$)",
+                                        # "show Magic Submission" -> "Magic Submission"
+                                        r"(?:show|display|open)\s+(?:me\s+)?(?:the\s+)?['\"]?([^'\"]+?)(?:\s+again|please|$)",
+                                        # "the Magic Submission document" -> "Magic Submission"
+                                        r"the\s+['\"]?([^'\"]+?)(?:\s+document|\s+file|\s+pdf)",
+                                        # "look into Magic Submission" -> "Magic Submission"
+                                        r"look\s+(?:into|at)\s+(?:this\s+)?(?:the\s+)?['\"]?([^'\"]+?)(?:\s+document|\s+file|\s+pdf|$)",
+                                    ]
+                                    
+                                    potential_names = []
+                                    for pattern in patterns:
+                                        matches = re.finditer(pattern, user_text_lower, re.IGNORECASE)
+                                        for match in matches:
+                                            potential_name = match.group(1).strip()
+                                            # Remove common words that might be captured
+                                            potential_name = re.sub(r'\b(?:the|a|an|this|that|document|file|pdf)\b', '', potential_name, flags=re.IGNORECASE).strip()
+                                            if potential_name and len(potential_name) > 2:  # At least 3 characters
+                                                potential_names.append(potential_name)
+                                    
+                                    # Try to match extracted names against available files
+                                    for potential_name in potential_names:
+                                        # First try exact match (case-insensitive)
+                                        for file_name in available_file_names:
+                                            if file_name.lower() == potential_name.lower():
+                                                extracted_file_name = file_name
+                                                logger.info(_color(f"[SHOW-EXTRACTED-TEXT] Exact match: '{potential_name}' -> '{extracted_file_name}'", "34"))
+                                                break
+                                        
+                                        if extracted_file_name:
+                                            break
+                                        
+                                        # Then try partial match - check if potential_name words are in file_name
+                                        potential_words = [w.strip() for w in re.split(r'[\s\-_]+', potential_name) if len(w.strip()) > 2]
+                                        if potential_words:
+                                            best_match = None
+                                            best_match_score = 0
+                                            
+                                            for file_name in available_file_names:
+                                                file_name_lower = file_name.lower()
+                                                # Count how many words from potential_name are in file_name
+                                                match_count = sum(1 for word in potential_words if word.lower() in file_name_lower)
+                                                match_score = match_count / len(potential_words) if potential_words else 0
+                                                
+                                                # Also check if potential_name is a significant substring
+                                                if potential_name.lower() in file_name_lower:
+                                                    match_score += 0.5
+                                                
+                                                if match_score > best_match_score and match_score >= 0.5:  # At least 50% match
+                                                    best_match_score = match_score
+                                                    best_match = file_name
+                                            
+                                            if best_match:
+                                                extracted_file_name = best_match
+                                                logger.info(_color(f"[SHOW-EXTRACTED-TEXT] Partial match: '{potential_name}' -> '{extracted_file_name}' (score: {best_match_score:.2f})", "34"))
+                                                break
+                                    
+                                    if not extracted_file_name and potential_names:
+                                        logger.info(_color(f"[SHOW-EXTRACTED-TEXT] Could not match extracted names {potential_names} against available files {available_file_names}", "33"))
+                                
+                                # Break after processing the most recent user message
+                                break
+            except Exception as e:
+                logger.warning(_color(f"[SHOW-EXTRACTED-TEXT] Error extracting file name from history: {e}", "33"))
+        
+        entry = tracer.start_tool(name, args_preview=f'{{"file_id": "{file_id if file_id else "auto"}", "file_name": "{extracted_file_name if extracted_file_name else "none"}"}}')
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] file_id={file_id} file_name={extracted_file_name} usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_show_extracted_text, file_id, extracted_file_name, usecase_id)
+            file_name_str = result.get("file_name", "N/A")
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, True, result_preview=f"file_id={file_id} file_name={file_name_str} status={result.get('status', 'unknown')}", duration_ms=duration_ms)
+            try:
+                import json as _json
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
+    @lc_tool
+    async def read_extracted_text(file_id: str) -> Dict[str, Any]:
+        """
+        Read full OCR text from database for agent analysis.
+        Call when user asks questions about document content and you need to read the OCR text to answer.
+        Use when user asks: "what does the document say about X?", "summarize the document", "what are the key points?"
+        Conditions: text_extraction must be "Completed", user must be asking about document content.
+        Returns full, non-truncated text for your analysis.
+        Use this text to answer user's question, but do NOT include the full text in your response.
+        """
+        name = "read_extracted_text"
+        entry = tracer.start_tool(name, args_preview=f'{{"file_id": "{file_id}"}}')
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] file_id={file_id} usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_read_extracted_text, file_id)
+            total_chars = result.get("total_chars", 0)
+            pages_count = result.get("total_pages", 0)
+            file_name_str = result.get("file_name", "N/A")
+            duration_ms = int((time.time() - start) * 1000)
+            # Log truncated version for performance, but return full to agent
+            tracer.finish_tool(entry, True, result_preview=f"file_id={file_id} file_name={file_name_str} pages={pages_count} chars={total_chars}", duration_ms=duration_ms, chars_read=total_chars)
+            try:
+                import json as _json
+                # Log truncated version
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED IN LOG]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+                logger.info(_color(f"[TOOL-OUTPUT {name}] NOTE: Logs truncated for performance, but agent receives FULL text ({total_chars} chars)", "33"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms pages={pages_count} chars={total_chars}", "34"))
+            # Return FULL result - no truncation for agent
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
     return [
         get_usecase_status,
         get_documents_markdown,
         start_requirement_generation,
         get_requirements,
+        check_text_extraction_status,
+        show_extracted_text,
+        read_extracted_text,
     ]
 
 

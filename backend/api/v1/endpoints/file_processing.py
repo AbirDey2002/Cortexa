@@ -6,6 +6,7 @@ from services.file_processing.file_service import upload_file_to_blob
 from services.file_processing.pdf_text_extractor import (
     download_file_to_bytes,
     extract_pdf_markdown,
+    extract_pdf_markdown_pagewise,
     extract_pdf_text,
     to_markdown,
 )
@@ -16,7 +17,7 @@ from models.file_processing.ocr_records import OCRInfo, OCROutputs
 from models.user.user import User
 from deps import get_db
 from uuid import uuid4, UUID
-from datetime import datetime
+from datetime import datetime, timezone
 from core.config import OCRServiceConfigs, settings
 from core.configs.pf_configs import PFImageToTextConfigs
 import logging
@@ -92,7 +93,7 @@ async def check_ocr_completion(usecase_id: int, db_session, max_retries=20, retr
     return False
 
 
-@router.post("/upload_file", response_model=list[FileMetadataSchema])
+@router.post("/file_contents/upload", response_model=list[FileMetadataSchema])
 async def upload_file(background_tasks: BackgroundTasks,
                       files: list[UploadFile] = File(...),
                       email: str = Form(...),
@@ -168,63 +169,94 @@ async def upload_file(background_tasks: BackgroundTasks,
             logger.info("Committing metadata to database")
             db.commit()
 
-            # Immediately process PDFs into Markdown and upsert OCR rows
+            # Immediately process PDFs into Markdown and upsert OCR rows (page-wise)
             processed_count = 0
             for metadata in file_metadata_list:
                 try:
                     bytes_data = download_file_to_bytes(metadata.file_link)
                     logger.info(f"Read bytes for file_id={metadata.file_id} name={metadata.file_name}: {len(bytes_data)} bytes")
-                    md = extract_pdf_markdown(bytes_data)
+                    
+                    # Extract page-wise markdown
+                    pages_data = extract_pdf_markdown_pagewise(bytes_data)
                     extractor = "pdfplumber"
-                    if not md:
-                        txt = extract_pdf_text(bytes_data)
-                        md = to_markdown(txt)
-                        extractor = "fallback"
-                    logger.info(f"Markdown extractor={extractor} chars={len(md)} for file_id={metadata.file_id}")
+                    
+                    # Fallback to single-page extraction if page-wise fails or returns empty
+                    if not pages_data or all(not p.get("markdown", "").strip() for p in pages_data):
+                        md = extract_pdf_markdown(bytes_data)
+                        if not md:
+                            txt = extract_pdf_text(bytes_data)
+                            md = to_markdown(txt)
+                            extractor = "fallback"
+                        # Convert single markdown to page-wise format
+                        pages_data = [{"page_number": 1, "markdown": md or ""}]
+                        logger.info(f"Markdown extractor={extractor} (fallback) chars={len(md)} for file_id={metadata.file_id}")
+                    else:
+                        total_chars = sum(len(p.get("markdown", "")) for p in pages_data)
+                        logger.info(f"Markdown extractor={extractor} (page-wise) pages={len(pages_data)} total_chars={total_chars} for file_id={metadata.file_id}")
+
+                    total_pages = len(pages_data)
+                    
+                    # Build JSON structure with page numbers as keys
+                    pages_json = {}
+                    for page_data in pages_data:
+                        page_number = page_data.get("page_number", 1)
+                        page_markdown = page_data.get("markdown", "")
+                        pages_json[str(page_number)] = page_markdown or ""
 
                     # Upsert OCRInfo
                     info = db.query(OCRInfo).filter(OCRInfo.file_id == metadata.file_id).first()
                     if not info:
                         info = OCRInfo(
                             file_id=metadata.file_id,
-                            total_pages=1,
-                            completed_pages=1,
+                            total_pages=total_pages,
+                            completed_pages=total_pages,
                             error_pages=0,
+                            pages_json=pages_json,
                         )
                         db.add(info)
                     else:
-                        info.total_pages = 1
-                        info.completed_pages = 1
+                        info.total_pages = total_pages
+                        info.completed_pages = total_pages
                         info.error_pages = 0
+                        info.pages_json = pages_json
 
-                    # Upsert OCROutputs page 1
-                    out = db.query(OCROutputs).filter(
-                        OCROutputs.file_id == metadata.file_id,
-                        OCROutputs.page_number == 1,
-                    ).first()
-                    if not out:
-                        out = OCROutputs(
-                            file_id=metadata.file_id,
-                            page_number=1,
-                            page_text=md or "",
-                            is_completed=True,
-                        )
-                        db.add(out)
-                    else:
-                        out.page_text = md or ""
+                    # Store each page separately in OCROutputs (for backward compatibility)
+                    for page_data in pages_data:
+                        page_number = page_data.get("page_number", 1)
+                        page_markdown = page_data.get("markdown", "")
+                        
+                        out = db.query(OCROutputs).filter(
+                            OCROutputs.file_id == metadata.file_id,
+                            OCROutputs.page_number == page_number,
+                        ).first()
+                        if not out:
+                            out = OCROutputs(
+                                file_id=metadata.file_id,
+                                page_number=page_number,
+                                page_text=page_markdown or "",
+                                is_completed=True,
+                            )
+                            db.add(out)
+                        else:
+                            out.page_text = page_markdown or ""
                         out.error_msg = None
                         out.is_completed = True
+                    
                     db.commit()
                     processed_count += 1
                 except Exception as e:
                     db.rollback()
                     logger.error(f"Error processing PDF for file_id={metadata.file_id}: {e}", exc_info=True)
 
-            # After processing all files, set usecase text_extraction status accordingly
+            # After processing all files, add PDF markers to chat_history and set usecase text_extraction status
             try:
                 usecase2 = db.query(UsecaseMetadata).filter(UsecaseMetadata.usecase_id == usecase_id).first()
                 if usecase2:
                     usecase2.text_extraction = "Completed" if processed_count > 0 else "Failed"
+                    
+                    # PDF markers will be created in gemini_chat endpoint after user message is added
+                    # This ensures correct ordering: User message → PDF marker → Agent response
+                    
                     db.commit()
                     logger.info(f"Set text_extraction='{usecase2.text_extraction}' for usecase {usecase_id} (processed={processed_count})")
             except Exception as e:
@@ -488,5 +520,92 @@ async def get_ocr_results(
 
 
 # Legacy OCR start endpoint removed
+
+
+@router.get("/file_contents/retrieval/{file_id}")
+async def get_file_contents(
+    file_id: UUID,
+    db_session: Session = Depends(get_db)
+):
+    """
+    Retrieve complete PDF content by file_id. Returns page-wise markdown content.
+    
+    Args:
+        file_id (UUID): ID of the file to retrieve
+        db_session (Session): Database session dependency
+        
+    Returns:
+        dict: File content structure with file_id, file_name, pages, and total_pages
+        
+    Raises:
+        HTTPException: 404 if file not found, 500 on error
+    """
+    with db_session as db:
+        try:
+            # Get file metadata
+            file_metadata = db.query(FileMetadata).filter(
+                FileMetadata.file_id == file_id
+            ).first()
+            
+            if not file_metadata:
+                logger.error(f"File not found for file_id: {file_id}")
+                raise HTTPException(status_code=404, detail=f"File with id {file_id} not found")
+            
+            # Get OCRInfo to check for pages_json
+            ocr_info = db.query(OCRInfo).filter(OCRInfo.file_id == file_id).first()
+            
+            pages = []
+            
+            # First, try to parse pages_json from OCRInfo
+            if ocr_info and ocr_info.pages_json:
+                try:
+                    # Parse JSON and build pages array
+                    for page_num_str, markdown in sorted(ocr_info.pages_json.items(), key=lambda x: int(x[0])):
+                        pages.append({
+                            "page_number": int(page_num_str),
+                            "markdown": markdown or "",
+                            "is_completed": True,
+                        })
+                    logger.info(f"Retrieved {len(pages)} pages from pages_json for file_id={file_id}")
+                except Exception as e:
+                    logger.warning(f"Error parsing pages_json for file_id={file_id}: {e}, falling back to OCROutputs")
+                    pages = []
+            
+            # Fallback to OCROutputs if pages_json not available or parsing failed
+            if not pages:
+                ocr_outputs = db.query(OCROutputs).filter(
+                    OCROutputs.file_id == file_id
+                ).order_by(OCROutputs.page_number.asc()).all()
+                
+                for output in ocr_outputs:
+                    pages.append({
+                        "page_number": output.page_number,
+                        "markdown": output.page_text or "",
+                        "is_completed": output.is_completed or False
+                    })
+                logger.info(f"Retrieved {len(pages)} pages from OCROutputs (fallback) for file_id={file_id}")
+            
+            total_pages = ocr_info.total_pages if ocr_info else len(pages)
+            
+            logger.info(
+                f"Retrieved file contents: file_id={file_id}, file_name={file_metadata.file_name}, "
+                f"total_pages={total_pages}, pages_returned={len(pages)}"
+            )
+            
+            return {
+                "file_id": str(file_id),
+                "file_name": file_metadata.file_name,
+                "total_pages": total_pages,
+                "pages": pages
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error retrieving file contents for file_id {file_id}: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error retrieving file contents: {str(e)}"
+            )
 
 

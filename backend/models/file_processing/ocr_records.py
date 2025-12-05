@@ -8,7 +8,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID as pgUUID
+from sqlalchemy.dialects.postgresql import UUID as pgUUID, JSON
 from sqlalchemy.orm import relationship
 from ..base import Base
 
@@ -20,6 +20,7 @@ class OCRInfo(Base):
     total_pages = Column(Integer, nullable=False)
     completed_pages = Column(Integer, nullable=False)
     error_pages = Column(Integer, nullable=False)
+    pages_json = Column(JSON, nullable=True)  # Store page-wise content as JSON: {"1": "markdown", "2": "markdown", ...}
     is_deleted = Column(Boolean, default=False)
     created_at = Column(TIMESTAMP, default=func.now())
     updated_at = Column(TIMESTAMP, default=func.now(), onupdate=func.now())
