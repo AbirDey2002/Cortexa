@@ -129,15 +129,45 @@ def extract_requirement_list(markdown: str) -> List[Dict]:
     
     logger.info("requirements_service: invoking requirement list extractor, prompt_chars=%d", len(prompt))
     raw = invoke_freeform_prompt(prompt)
-    # Log FULL raw output from the agent before any parsing (for parser adjustments)
-    if AgentLogConfigs.LOG_AGENT_RAW_OUTPUT:
-        try:
-            text = raw or ""
+    # Log COMPLETE raw output from the agent before any parsing (for parser adjustments)
+    # Always log complete output, write to file if too long for console
+    try:
+        text = raw or ""
+        if AgentLogConfigs.LOG_AGENT_RAW_OUTPUT:
             if len(text) > AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH:
-                text = text[:AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH] + "... [TRUNCATED]"
-            logger.info(_yellow("requirements_service: list extractor RAW output (full):\n%s"), text)
-        except Exception:
-            pass
+                # Write complete output to file
+                try:
+                    base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs", "requirements")
+                    os.makedirs(base, exist_ok=True)
+                    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+                    output_file = os.path.join(base, f"{ts}-list-extractor-complete-output.txt")
+                    with open(output_file, "w", encoding="utf-8") as f:
+                        f.write(text)
+                    logger.info(_yellow("requirements_service: list extractor COMPLETE output (too long for console, written to file): %s (length=%d)"), output_file, len(text))
+                    # Also log a preview in console
+                    preview = text[:AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH] + "... [TRUNCATED - see file for complete output]"
+                    logger.info(_yellow("requirements_service: list extractor RAW output (preview):\n%s"), preview)
+                except Exception as e:
+                    logger.warning("requirements_service: failed to write complete list output to file: %s", e)
+                    # Fallback: log truncated version
+                    preview = text[:AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH] + "... [TRUNCATED]"
+                    logger.info(_yellow("requirements_service: list extractor RAW output (truncated):\n%s"), preview)
+            else:
+                logger.info(_yellow("requirements_service: list extractor RAW output (complete):\n%s"), text)
+        else:
+            # Even if LOG_AGENT_RAW_OUTPUT is disabled, write complete output to file for debugging
+            try:
+                base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs", "requirements")
+                os.makedirs(base, exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+                output_file = os.path.join(base, f"{ts}-list-extractor-complete-output.txt")
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(text)
+                logger.info("requirements_service: list extractor complete output written to file: %s (length=%d)", output_file, len(text))
+            except Exception as e:
+                logger.warning("requirements_service: failed to write complete list output to file: %s", e)
+    except Exception:
+        pass
     # Log raw IO already written by helper
     # Robust parsing
     parsed = None
@@ -184,21 +214,49 @@ def extract_requirement_list(markdown: str) -> List[Dict]:
                 if name and desc:
                     items.append({"name": name, "description": desc})
     logger.info("requirements_service: list extractor returned %d items", len(items))
-    # Blue preview log of list extractor output (first few items)
+    
+    # Log COMPLETE parsed output (all items)
     try:
         import json as _json
-        preview_items = []
-        for it in items[: min(5, len(items))]:
-            preview_items.append({
-                "name": (it.get("name", "") or "")[:120],
-                "description": (it.get("description", "") or "")[:240],
-            })
-        _preview = _json.dumps(preview_items)[:2000]
-        if len(_json.dumps(preview_items)) > 2000:
-            _preview += "... [TRUNCATED]"
-        logger.info("\033[34mrequirements_service: list preview -> %s\033[0m", _preview)
-    except Exception:
-        pass
+        complete_output = _json.dumps(items, indent=2, ensure_ascii=False)
+        if len(complete_output) > AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH:
+            # Write complete parsed output to file
+            try:
+                base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs", "requirements")
+                os.makedirs(base, exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+                output_file = os.path.join(base, f"{ts}-list-extractor-parsed-complete.json")
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(complete_output)
+                logger.info("\033[34mrequirements_service: list extractor COMPLETE parsed output (written to file): %s (items=%d, length=%d)\033[0m", output_file, len(items), len(complete_output))
+                # Also log a preview in console
+                preview = complete_output[:2000] + "... [TRUNCATED - see file for complete output]"
+                logger.info("\033[34mrequirements_service: list parsed output (preview):\n%s\033[0m", preview)
+            except Exception as e:
+                logger.warning("requirements_service: failed to write complete parsed list output to file: %s", e)
+                # Fallback: log truncated version
+                preview = complete_output[:2000] + "... [TRUNCATED]"
+                logger.info("\033[34mrequirements_service: list parsed output (truncated):\n%s\033[0m", preview)
+        else:
+            logger.info("\033[34mrequirements_service: list extractor COMPLETE parsed output:\n%s\033[0m", complete_output)
+    except Exception as e:
+        logger.warning("requirements_service: failed to log complete parsed list output: %s", e)
+        # Fallback: log preview of first few items
+        try:
+            import json as _json
+            preview_items = []
+            for it in items[: min(5, len(items))]:
+                preview_items.append({
+                    "name": (it.get("name", "") or "")[:120],
+                    "description": (it.get("description", "") or "")[:240],
+                })
+            _preview = _json.dumps(preview_items)[:2000]
+            if len(_json.dumps(preview_items)) > 2000:
+                _preview += "... [TRUNCATED]"
+            logger.info("\033[34mrequirements_service: list preview -> %s\033[0m", _preview)
+        except Exception:
+            pass
+    
     return items
 
 
@@ -248,25 +306,90 @@ def extract_requirement_details(markdown: str, name: str, description: str, prev
     prompt = base_details_prompt + dynamic_parts
     logger.info("requirements_service: invoking details extractor for '%s'", name)
     raw = invoke_freeform_prompt(prompt)
-    # Log FULL raw output from the agent before any parsing (for parser adjustments)
-    if AgentLogConfigs.LOG_AGENT_RAW_OUTPUT:
-        try:
-            text = raw or ""
-            if len(text) > AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH:
-                text = text[:AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH] + "... [TRUNCATED]"
-            logger.info(_yellow("requirements_service: details extractor RAW output (full) for '%s':\n%s"), name, text)
-        except Exception:
-            pass
-    parsed = _safe_parse_json(raw)
-    details = parsed.get("requirement_entities", {}) if isinstance(parsed, dict) else {}
+    # Log COMPLETE raw output from the agent before any parsing (for parser adjustments)
+    # Always log complete output, write to file if too long for console
     try:
-        import json as _json
-        preview = _json.dumps(details)[:1500]
-        if len(_json.dumps(details)) > 1500:
-            preview += "... [TRUNCATED]"
-        logger.info("\033[34mrequirements_service: details preview for '%s' -> %s\033[0m", name, preview)
+        text = raw or ""
+        if AgentLogConfigs.LOG_AGENT_RAW_OUTPUT:
+            if len(text) > AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH:
+                # Write complete output to file
+                try:
+                    base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs", "requirements")
+                    os.makedirs(base, exist_ok=True)
+                    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+                    # Sanitize name for filename
+                    safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+                    output_file = os.path.join(base, f"{ts}-details-extractor-{safe_name}-complete-output.txt")
+                    with open(output_file, "w", encoding="utf-8") as f:
+                        f.write(text)
+                    logger.info(_yellow("requirements_service: details extractor COMPLETE output for '%s' (too long for console, written to file): %s (length=%d)"), name, output_file, len(text))
+                    # Also log a preview in console
+                    preview = text[:AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH] + "... [TRUNCATED - see file for complete output]"
+                    logger.info(_yellow("requirements_service: details extractor RAW output (preview) for '%s':\n%s"), name, preview)
+                except Exception as e:
+                    logger.warning("requirements_service: failed to write complete details output to file for '%s': %s", name, e)
+                    # Fallback: log truncated version
+                    preview = text[:AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH] + "... [TRUNCATED]"
+                    logger.info(_yellow("requirements_service: details extractor RAW output (truncated) for '%s':\n%s"), name, preview)
+            else:
+                logger.info(_yellow("requirements_service: details extractor RAW output (complete) for '%s':\n%s"), name, text)
+        else:
+            # Even if LOG_AGENT_RAW_OUTPUT is disabled, write complete output to file for debugging
+            try:
+                base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs", "requirements")
+                os.makedirs(base, exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+                # Sanitize name for filename
+                safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+                output_file = os.path.join(base, f"{ts}-details-extractor-{safe_name}-complete-output.txt")
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(text)
+                logger.info("requirements_service: details extractor complete output for '%s' written to file: %s (length=%d)", name, output_file, len(text))
+            except Exception as e:
+                logger.warning("requirements_service: failed to write complete details output to file for '%s': %s", name, e)
     except Exception:
         pass
+    parsed = _safe_parse_json(raw)
+    details = parsed.get("requirement_entities", {}) if isinstance(parsed, dict) else {}
+    
+    # Log COMPLETE parsed output
+    try:
+        import json as _json
+        complete_output = _json.dumps(details, indent=2, ensure_ascii=False)
+        if len(complete_output) > AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH:
+            # Write complete parsed output to file
+            try:
+                base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs", "requirements")
+                os.makedirs(base, exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+                # Sanitize name for filename
+                safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+                output_file = os.path.join(base, f"{ts}-details-extractor-{safe_name}-parsed-complete.json")
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(complete_output)
+                logger.info("\033[34mrequirements_service: details extractor COMPLETE parsed output for '%s' (written to file): %s (length=%d)\033[0m", name, output_file, len(complete_output))
+                # Also log a preview in console
+                preview = complete_output[:1500] + "... [TRUNCATED - see file for complete output]"
+                logger.info("\033[34mrequirements_service: details parsed output (preview) for '%s':\n%s\033[0m", name, preview)
+            except Exception as e:
+                logger.warning("requirements_service: failed to write complete parsed details output to file for '%s': %s", name, e)
+                # Fallback: log truncated version
+                preview = complete_output[:1500] + "... [TRUNCATED]"
+                logger.info("\033[34mrequirements_service: details parsed output (truncated) for '%s':\n%s\033[0m", name, preview)
+        else:
+            logger.info("\033[34mrequirements_service: details extractor COMPLETE parsed output for '%s':\n%s\033[0m", name, complete_output)
+    except Exception as e:
+        logger.warning("requirements_service: failed to log complete parsed details output for '%s': %s", name, e)
+        # Fallback: log preview
+        try:
+            import json as _json
+            preview = _json.dumps(details)[:1500]
+            if len(_json.dumps(details)) > 1500:
+                preview += "... [TRUNCATED]"
+            logger.info("\033[34mrequirements_service: details preview for '%s' -> %s\033[0m", name, preview)
+        except Exception:
+            pass
+    
     logger.info("requirements_service: details extractor returned keys=%s", list(details.keys()) if isinstance(details, dict) else [])
     return details
 

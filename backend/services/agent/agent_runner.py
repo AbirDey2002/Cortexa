@@ -811,11 +811,19 @@ def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
     @lc_tool
     async def start_requirement_generation() -> Dict[str, Any]:
         """
-        Request requirement generation. ONLY call this when:
-        - text_extraction is Completed
-        - requirement_generation is Not Started
-        - User explicitly requests it
-        This should be your FINAL action. Do not call other tools after this.
+        Request requirement generation. **CRITICAL: You MUST call this tool when the user asks to generate requirements.**
+        
+        Call this when ALL conditions are met:
+        - text_extraction is "Completed"
+        - requirement_generation is "Not Started"
+        - User explicitly requests requirement generation (e.g., "generate requirements", "extract requirements", "create requirements")
+        
+        **IMPORTANT**: 
+        - If user asks to generate requirements and conditions are met, you MUST call this tool - do not just respond with text.
+        - This tool will trigger a confirmation modal for the user.
+        - After calling this tool, respond: "I've requested requirement generation. A confirmation modal will appear. Click 'Yes' to start the background process."
+        - This should be your FINAL action. Do not call other tools after this.
+        
         Returns: {'status': 'confirmation_required'} if conditions met, or error/status info otherwise.
         """
         name = "start_requirement_generation"
@@ -1107,6 +1115,41 @@ def run_agent_turn(usecase_id, user_message: str) -> Tuple[str, Dict[str, Any]]:
     Returns: (assistant_text, traces)
     """
     tracer = TraceCollector()
+    
+    # Pre-check: Detect requirement generation intent and ensure tool is called
+    user_text_lower = user_message.lower()
+    requirement_generation_keywords = [
+        "generate requirements", "extract requirements", "create requirements", 
+        "requirements list", "generate requirement", "extract requirement",
+        "start requirement generation", "begin requirement generation"
+    ]
+    wants_requirement_generation = any(kw in user_text_lower for kw in requirement_generation_keywords)
+    
+    if wants_requirement_generation:
+        logger.info(_color(f"[REQ-GEN-PRECHECK] Detected requirement generation intent in user message", "35"))
+        # Check status first to see if we should call the tool
+        try:
+            status = tool_get_usecase_status(usecase_id)
+            text_extraction = status.get("text_extraction") or "Not Started"
+            requirement_generation = status.get("requirement_generation") or "Not Started"
+            confirmed = status.get("requirement_generation_confirmed", False)
+            
+            logger.info(_color(
+                f"[REQ-GEN-PRECHECK] Status: text_extraction={text_extraction}, "
+                f"requirement_generation={requirement_generation}, confirmed={confirmed}",
+                "35"
+            ))
+            
+            # If conditions are met for calling the tool, we'll ensure it gets called
+            # The agent should call it, but we'll add this as a safeguard
+            if text_extraction == "Completed" and requirement_generation == "Not Started" and not confirmed:
+                logger.info(_color(
+                    f"[REQ-GEN-PRECHECK] Conditions met - agent should call start_requirement_generation tool",
+                    "35"
+                ))
+        except Exception as e:
+            logger.warning(_color(f"[REQ-GEN-PRECHECK] Pre-check failed: {e}", "33"))
+    
     tools = build_tools(usecase_id, tracer)
 
     try:
@@ -1270,6 +1313,21 @@ def run_agent_turn(usecase_id, user_message: str) -> Tuple[str, Dict[str, Any]]:
             )
         except Exception:
             tool_called = False
+        
+        # Fallback: If user asked for requirement generation but tool wasn't called, check if we should emit modal
+        if not tool_called and wants_requirement_generation:
+            logger.info(_color(f"[REQ-GEN-FALLBACK] Tool was not called but user requested requirement generation - checking status", "35"))
+            try:
+                status = tool_get_usecase_status(usecase_id)
+                text_extraction = status.get("text_extraction") or "Not Started"
+                requirement_generation = status.get("requirement_generation") or "Not Started"
+                confirmed = status.get("requirement_generation_confirmed", False)
+                
+                if text_extraction == "Completed" and requirement_generation == "Not Started" and not confirmed:
+                    logger.info(_color(f"[REQ-GEN-FALLBACK] Conditions met - emitting confirmation event as fallback", "35"))
+                    tool_called = True  # Treat as if tool was called for modal emission
+            except Exception as e:
+                logger.warning(_color(f"[REQ-GEN-FALLBACK] Fallback check failed: {e}", "33"))
         
         if tool_called:
             logger.info(_color(f"[REQ-GEN-MODAL] Tool was called; checking if confirmation event needed", "35"))

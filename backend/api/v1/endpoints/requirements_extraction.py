@@ -44,17 +44,24 @@ def _run_requirements_generation(usecase_id: UUID):
 
             files, combined_md = get_usecase_documents_markdown(db, usecase_id)
             req_list = extract_requirement_list(combined_md)
-            logger.info("requirements_extraction: list count=%d", len(req_list))
+            total_requirements = len(req_list)
+            logger.info(_blue(f"requirements_extraction: list count={total_requirements}"))
 
             inserted = 0
             prior: list[dict] = []
-            for item in req_list:
+            for idx, item in enumerate(req_list, start=1):
                 try:
                     name = str(item.get("name") or "").strip()
                     desc = str(item.get("description") or "").strip()
                     if not name:
+                        logger.warning(_blue(f"requirements_extraction: skipping item {idx}/{total_requirements} - empty name"))
                         continue
+                    
+                    # Log polling status: starting requirement processing
+                    logger.info(_blue(f"[REQ-STATUS] usecase={usecase_id} | Processing requirement {idx}/{total_requirements} | Name='{name}' | Status=STARTING"))
+                    
                     details = extract_requirement_details(combined_md, name, desc, prior)
+                    
                     # Log LLM requirement payload (blue) before storing
                     try:
                         import json as _json
@@ -64,18 +71,34 @@ def _run_requirements_generation(usecase_id: UUID):
                         logger.info(_blue(f"[REQ-LLM] usecase={usecase_id} name='{name}' payload={_preview}"))
                     except Exception:
                         pass
+                    
                     persist_requirement(db, usecase_id, {"name": name, "description": desc, "requirement_entities": details})
                     inserted += 1
                     prior.append({"name": name, "description": desc})
-                    logger.info(_blue(f"requirements_extraction: inserted requirement '{name}' (total={inserted})"))
+                    
+                    # Log polling status: requirement completed
+                    progress_pct = int((idx / total_requirements) * 100) if total_requirements > 0 else 0
+                    logger.info(_blue(f"[REQ-STATUS] usecase={usecase_id} | Completed requirement {idx}/{total_requirements} ({progress_pct}%) | Name='{name}' | Status=COMPLETED | Total inserted={inserted}"))
+                    
+                    # Log overall progress summary
+                    if idx < total_requirements:
+                        remaining = total_requirements - idx
+                        next_name = req_list[idx].get('name', 'N/A') if idx < len(req_list) else 'N/A'
+                        logger.info(_blue(f"[REQ-PROGRESS] usecase={usecase_id} | Progress: {idx}/{total_requirements} completed ({progress_pct}%) | {remaining} remaining | Next: '{next_name}'"))
+                    
                     time.sleep(60)
                 except Exception as e:
-                    logger.error("requirements_extraction: details failed for '%s': %s", item, e, exc_info=True)
+                    # Log polling status: requirement failed
+                    logger.error(_blue(f"[REQ-STATUS] usecase={usecase_id} | Failed requirement {idx}/{total_requirements} | Name='{name if 'name' in locals() else 'N/A'}' | Status=FAILED | Error: {e}"), exc_info=True)
                     continue
 
             record = db.query(UsecaseMetadata).filter(UsecaseMetadata.usecase_id == usecase_id).first()
             record.requirement_generation = "Completed" if inserted > 0 else "Failed"
             db.commit()
+            
+            # Final summary log
+            success_rate = int((inserted / total_requirements) * 100) if total_requirements > 0 else 0
+            logger.info(_blue(f"[REQ-SUMMARY] usecase={usecase_id} | FINAL STATUS: {record.requirement_generation} | Total requirements: {total_requirements} | Successfully inserted: {inserted} | Failed: {total_requirements - inserted} | Success rate: {success_rate}%"))
             logger.info(_blue(f"requirements_extraction: finished status={record.requirement_generation} inserted={inserted}"))
     except Exception as e:
         logger.error("requirements_extraction: background generation error: %s", e, exc_info=True)
