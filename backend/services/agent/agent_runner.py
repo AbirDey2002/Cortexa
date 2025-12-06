@@ -663,6 +663,98 @@ def tool_show_extracted_text(file_id: str = None, file_name: str = None, usecase
         }
 
 
+def tool_show_requirements(usecase_id: UUID) -> Dict[str, Any]:
+    """Create [modal] placeholder in chat_history for requirements display.
+    Only call when user asks to see/show requirements.
+    Similar to tool_show_extracted_text but for requirements.
+    """
+    with get_db_context() as db:
+        # Verify usecase exists
+        usecase = db.query(UsecaseMetadata).filter(
+            UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.is_deleted == False,
+        ).first()
+        
+        if not usecase:
+            return {"error": "usecase_not_found"}
+        
+        # Check requirement_generation status (allow "In Progress" or "Completed")
+        req_gen_status = usecase.requirement_generation or "Not Started"
+        if req_gen_status not in ("In Progress", "Completed"):
+            return {
+                "error": "requirements_not_ready",
+                "message": f"Requirement generation is '{req_gen_status}'. {'Please wait for generation to start.' if req_gen_status == 'Not Started' else 'Please wait for generation to complete or retry if failed.'}",
+                "requirement_generation": req_gen_status
+            }
+        
+        # Get current chat history
+        chat_history = usecase.chat_history or []
+        
+        # Find the user message we just added (should be first or near the beginning)
+        user_message = None
+        user_index = -1
+        for i, entry in enumerate(chat_history):
+            if isinstance(entry, dict) and "user" in entry:
+                user_message = entry
+                user_index = i
+                break
+        
+        if not user_message or user_index < 0:
+            # If no user message found, append to end
+            from datetime import datetime, timezone
+            modal_timestamp = datetime.now(timezone.utc).isoformat()
+        else:
+            # Parse user message timestamp and add 1 second
+            try:
+                from datetime import datetime, timezone
+                user_timestamp_str = user_message.get("timestamp", "")
+                if user_timestamp_str:
+                    user_timestamp = datetime.fromisoformat(user_timestamp_str.replace('Z', '+00:00'))
+                    modal_timestamp = datetime.fromtimestamp(user_timestamp.timestamp() + 1, tz=timezone.utc).isoformat()
+                else:
+                    modal_timestamp = datetime.now(timezone.utc).isoformat()
+            except Exception as e:
+                logger.warning(_color(f"[SHOW-REQUIREMENTS] Error parsing timestamp: {e}", "33"))
+                from datetime import datetime, timezone
+                modal_timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Create [modal] marker - NO TEXT DATA, only usecase_id reference
+        # Include top-level timestamp for proper sorting in chat history
+        modal_marker = {
+            "modal": {
+                "type": "requirements",
+                "usecase_id": str(usecase_id),
+                "timestamp": modal_timestamp
+            },
+            "timestamp": modal_timestamp
+        }
+        
+        # Insert marker right after user message (or at beginning if no user message)
+        if user_index >= 0:
+            updated_history = (
+                chat_history[:user_index + 1] + 
+                [modal_marker] + 
+                chat_history[user_index + 1:]
+            )
+        else:
+            updated_history = [modal_marker] + chat_history
+        
+        # Update chat history
+        usecase.chat_history = updated_history
+        db.commit()
+        
+        logger.info(_color(
+            f"[SHOW-REQUIREMENTS] Created modal marker for usecase_id={usecase_id}",
+            "34"
+        ))
+        
+        return {
+            "status": "success",
+            "message": f"Requirements will be displayed above for you to review.",
+            "usecase_id": str(usecase_id)
+        }
+
+
 def tool_read_extracted_text(file_id: str) -> Dict[str, Any]:
     """Read full OCR text from database. Returns complete, non-truncated text for agent analysis."""
     try:
@@ -747,6 +839,125 @@ def tool_read_extracted_text(file_id: str) -> Dict[str, Any]:
             "total_chars": total_chars,
             "message": f"Retrieved full OCR text from '{file_metadata.file_name}' ({len(pages)} pages, {total_chars} characters)."
         }
+
+
+def tool_read_requirement(usecase_id: UUID, display_id: int) -> Dict[str, Any]:
+    """Read full requirement content from database by display_id. Returns complete, non-truncated text for agent analysis."""
+    try:
+        with get_db_context() as db:
+            # Verify usecase exists
+            usecase = db.query(UsecaseMetadata).filter(
+                UsecaseMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.is_deleted == False,
+            ).first()
+            
+            if not usecase:
+                logger.warning(_color(f"[READ-REQUIREMENT] usecase not found: {usecase_id}", "31"))
+                return {"error": "usecase_not_found", "message": f"Usecase with id {usecase_id} not found"}
+            
+            # Check requirement_generation status
+            req_gen_status = usecase.requirement_generation or "Not Started"
+            if req_gen_status not in ("In Progress", "Completed"):
+                return {
+                    "error": "requirements_not_ready",
+                    "message": f"Requirement generation is '{req_gen_status}'. Requirements are not available yet.",
+                    "requirement_generation": req_gen_status
+                }
+            
+            # Find requirement by display_id
+            requirement = db.query(Requirement).filter(
+                Requirement.usecase_id == usecase_id,
+                Requirement.display_id == display_id,
+                Requirement.is_deleted == False,
+            ).first()
+            
+            if not requirement:
+                logger.warning(_color(f"[READ-REQUIREMENT] requirement not found: usecase_id={usecase_id} display_id={display_id}", "31"))
+                return {
+                    "error": "requirement_not_found", 
+                    "message": f"Requirement with display_id {display_id} not found for this usecase"
+                }
+            
+            # Get requirement_text JSON
+            req_text = requirement.requirement_text or {}
+            
+            # Format as readable text (similar to OCR combined_markdown format)
+            formatted_text_parts = []
+            
+            # Add requirement name
+            name = req_text.get("name", "")
+            if name:
+                formatted_text_parts.append(f"## Requirement: {name}\n")
+            
+            # Add description
+            description = req_text.get("description", "")
+            if description:
+                formatted_text_parts.append(f"### Description\n{description}\n")
+            
+            # Add requirement_entities
+            req_entities = req_text.get("requirement_entities", {})
+            if req_entities:
+                formatted_text_parts.append("### Requirement Entities\n")
+                # Handle both list and dict structures
+                if isinstance(req_entities, list):
+                    # If it's a list, iterate through each entity object
+                    for entity_obj in req_entities:
+                        if isinstance(entity_obj, dict):
+                            # Process each key in the entity object
+                            for entity_type, entity_data in entity_obj.items():
+                                formatted_text_parts.append(f"#### {entity_type.replace('_', ' ').title()}\n")
+                                if isinstance(entity_data, list):
+                                    for item in entity_data:
+                                        if isinstance(item, str):
+                                            formatted_text_parts.append(f"- {item}\n")
+                                        else:
+                                            formatted_text_parts.append(f"- {json.dumps(item, indent=2)}\n")
+                                elif isinstance(entity_data, dict):
+                                    formatted_text_parts.append(f"{json.dumps(entity_data, indent=2)}\n")
+                                else:
+                                    formatted_text_parts.append(f"{str(entity_data)}\n")
+                        else:
+                            # If list item is not a dict, just stringify it
+                            formatted_text_parts.append(f"- {str(entity_obj)}\n")
+                elif isinstance(req_entities, dict):
+                    # Original dict handling
+                    for entity_type, entity_data in req_entities.items():
+                        formatted_text_parts.append(f"#### {entity_type.replace('_', ' ').title()}\n")
+                        if isinstance(entity_data, list):
+                            for item in entity_data:
+                                if isinstance(item, str):
+                                    formatted_text_parts.append(f"- {item}\n")
+                                else:
+                                    formatted_text_parts.append(f"- {json.dumps(item, indent=2)}\n")
+                        elif isinstance(entity_data, dict):
+                            formatted_text_parts.append(f"{json.dumps(entity_data, indent=2)}\n")
+                        else:
+                            formatted_text_parts.append(f"{str(entity_data)}\n")
+            
+            # Combine all parts
+            formatted_text = "\n".join(formatted_text_parts)
+            
+            total_chars = len(formatted_text)
+            logger.info(_color(
+                f"[READ-REQUIREMENT] usecase_id={usecase_id} display_id={display_id} "
+                f"requirement_id={requirement.id} total_chars={total_chars}",
+                "34"
+            ))
+            
+            # Return FULL text - no truncation for agent
+            return {
+                "usecase_id": str(usecase_id),
+                "display_id": display_id,
+                "requirement_id": str(requirement.id),
+                "requirement_name": name,
+                "requirement_text": formatted_text,
+                "requirement_json": req_text,  # Also include raw JSON for reference
+                "total_chars": total_chars,
+                "message": f"Retrieved requirement REQ-{display_id}: {name} ({total_chars} characters)."
+            }
+    except Exception as e:
+        logger.error(_color(f"[READ-REQUIREMENT] error: {e}", "31"), exc_info=True)
+        return {"error": "internal_error", "message": str(e)}
 
 
 def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
@@ -1098,6 +1309,82 @@ def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
             logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
             raise
 
+    @lc_tool
+    async def read_requirement(display_id: int) -> Dict[str, Any]:
+        """
+        Read full requirement content from database by display_id for agent analysis.
+        Call when user asks questions about a specific requirement and you need to read its content to answer.
+        Use when user asks: "what does requirement X say?", "tell me about REQ-1", "what are the details of requirement 2?"
+        Conditions: requirement_generation must be "In Progress" OR "Completed", display_id must be valid.
+        Returns full, non-truncated requirement text for your analysis.
+        Use this text to answer user's question, but do NOT include the full text in your response.
+        """
+        name = "read_requirement"
+        entry = tracer.start_tool(name, args_preview=f'{{"display_id": {display_id}}}')
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] display_id={display_id} usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_read_requirement, usecase_id, display_id)
+            total_chars = result.get("total_chars", 0)
+            req_name = result.get("requirement_name", "N/A")
+            duration_ms = int((time.time() - start) * 1000)
+            # Log truncated version for performance, but return full to agent
+            tracer.finish_tool(entry, True, result_preview=f"display_id={display_id} name={req_name} chars={total_chars}", duration_ms=duration_ms, chars_read=total_chars)
+            try:
+                import json as _json
+                # Log truncated version
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED IN LOG]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+                logger.info(_color(f"[TOOL-OUTPUT {name}] NOTE: Logs truncated for performance, but agent receives FULL text ({total_chars} chars)", "33"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms chars={total_chars}", "34"))
+            # Return FULL result - no truncation for agent
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
+    @lc_tool
+    async def show_requirements() -> Dict[str, Any]:
+        """
+        Create [modal] placeholder in chat_history to display requirements to user.
+        **MANDATORY**: You MUST call this tool when user explicitly requests to see/view/display requirements.
+        User phrases: "show requirements", "display requirements", "show me the requirements", "view requirements", "show the requirements", etc.
+        Conditions:
+        1. requirement_generation status is "In Progress" OR "Completed"
+        2. User explicitly asks to see requirements
+        After calling, respond: "I've retrieved the requirements. They will be displayed above for you to review."
+        This tool creates a [modal] placeholder in chat_history (no text data stored).
+        """
+        name = "show_requirements"
+        entry = tracer.start_tool(name, args_preview="{}")
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_show_requirements, usecase_id)
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, True, result_preview=f"usecase_id={usecase_id} status={result.get('status', 'unknown')}", duration_ms=duration_ms)
+            try:
+                import json as _json
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
     return [
         get_usecase_status,
         get_documents_markdown,
@@ -1106,6 +1393,8 @@ def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
         check_text_extraction_status,
         show_extracted_text,
         read_extracted_text,
+        read_requirement,
+        show_requirements,
     ]
 
 

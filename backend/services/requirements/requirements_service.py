@@ -395,6 +395,7 @@ def extract_requirement_details(markdown: str, name: str, description: str, prev
 
 
 def persist_requirement(db: Session, usecase_id: UUID, requirement_json: Dict) -> UUID:
+    # Create requirement first
     rec = Requirement(
         usecase_id=usecase_id,
         requirement_text=requirement_json,
@@ -402,7 +403,24 @@ def persist_requirement(db: Session, usecase_id: UUID, requirement_json: Dict) -
     db.add(rec)
     db.commit()
     db.refresh(rec)
-    logger.info("requirements_service: persisted requirement id=%s", str(rec.id))
+    
+    # Calculate display_id based on creation time order (ascending)
+    # Query all non-deleted requirements for this usecase, ordered by created_at
+    all_requirements = db.query(Requirement).filter(
+        Requirement.usecase_id == usecase_id,
+        Requirement.is_deleted == False,
+    ).order_by(Requirement.created_at.asc()).all()
+    
+    # Assign display_id based on position in the ordered list (starting from 1)
+    for idx, req in enumerate(all_requirements, start=1):
+        req.display_id = idx
+    
+    db.commit()
+    db.refresh(rec)
+    
+    # Get the display_id for the newly created requirement
+    display_id = rec.display_id
+    logger.info("requirements_service: persisted requirement id=%s display_id=%d", str(rec.id), display_id)
     return rec.id
 
 

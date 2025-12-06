@@ -13,6 +13,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { RequirementsGenerationConfirmModal } from "@/components/chat/RequirementsGenerationConfirmModal";
 import { PdfContentMessage } from "@/components/chat/PdfContentMessage";
+import { RequirementsMessage } from "@/components/chat/RequirementsMessage";
 
 function extractMainTextFromStored(raw: any): string {
   try {
@@ -108,6 +109,16 @@ export function ChatInterface({ userId, usecaseId }: Props) {
     pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
     timestamp: Date;
   }>>([]);
+  const [requirementsMessages, setRequirementsMessages] = useState<Array<{
+    requirements: Array<{
+      id: string;
+      name: string;
+      description: string;
+      requirement_entities?: any;
+      created_at?: string;
+    }>;
+    timestamp: Date;
+  }>>([]);
   // Removed files tray and processing modal state
   const [status, setStatus] = useState<string>("Completed");
   const [waitingForResponse, setWaitingForResponse] = useState(false);
@@ -130,6 +141,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
       if (!usecaseId) {
         setMessages([]);
         setPdfContentMessages([]);
+        setRequirementsMessages([]);
         setReqGenStatus("");
         setLastReqGenCheckedUsecaseId(null);
         return;
@@ -235,7 +247,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         // Check for [modal] markers in chat history and fetch content
         const modalMarkers = sortedHistory.filter((entry: any) => entry && entry.modal);
         if (modalMarkers.length > 0) {
-          // Fetch PDF content for all markers
+          // Fetch PDF content and requirements for all markers
           (async () => {
             const pdfContents: Array<{
               fileId: string;
@@ -244,9 +256,21 @@ export function ChatInterface({ userId, usecaseId }: Props) {
               timestamp: Date;
             }> = [];
             
+            const requirementsContents: Array<{
+              requirements: Array<{
+                id: string;
+                name: string;
+                description: string;
+                requirement_entities?: any;
+                created_at?: string;
+              }>;
+              timestamp: Date;
+            }> = [];
+            
             for (const markerEntry of modalMarkers) {
               const modal = markerEntry.modal;
               if (modal && modal.file_id) {
+                // PDF modal
                 try {
                   const fileContent = await apiGet<any>(`/files/file_contents/retrieval/${modal.file_id}`);
                   if (fileContent && fileContent.pages && fileContent.pages.length > 0) {
@@ -260,6 +284,19 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                 } catch (error) {
                   console.error("Error retrieving PDF content from [modal] marker:", error);
                 }
+              } else if (modal && modal.type === "requirements" && modal.usecase_id) {
+                // Requirements modal
+                try {
+                  const requirementsData = await apiGet<any>(`/requirements/${modal.usecase_id}/list`);
+                  if (requirementsData && requirementsData.requirements && requirementsData.requirements.length > 0) {
+                    requirementsContents.push({
+                      requirements: requirementsData.requirements,
+                      timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
+                    });
+                  }
+                } catch (error) {
+                  console.error("Error retrieving requirements from [modal] marker:", error);
+                }
               }
             }
             
@@ -268,9 +305,16 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             } else {
               setPdfContentMessages([]);
             }
+            
+            if (requirementsContents.length > 0) {
+              setRequirementsMessages(requirementsContents);
+            } else {
+              setRequirementsMessages([]);
+            }
           })();
         } else {
           setPdfContentMessages([]);
+          setRequirementsMessages([]);
         }
         
         // Schedule scroll to bottom after messages are rendered
@@ -342,7 +386,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             // Check for [modal] markers in chat history and fetch content
             const modalMarkers = sortedHistory.filter((entry: any) => entry && entry.modal);
             if (modalMarkers.length > 0) {
-              // Fetch PDF content for all markers
+              // Fetch PDF content and requirements for all markers
               const pdfContents: Array<{
                 fileId: string;
                 fileName: string;
@@ -350,9 +394,21 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                 timestamp: Date;
               }> = [];
               
+              const requirementsContents: Array<{
+                requirements: Array<{
+                  id: string;
+                  name: string;
+                  description: string;
+                  requirement_entities?: any;
+                  created_at?: string;
+                }>;
+                timestamp: Date;
+              }> = [];
+              
               for (const markerEntry of modalMarkers) {
                 const modal = markerEntry.modal;
                 if (modal && modal.file_id) {
+                  // PDF modal
                   try {
                     const fileContent = await apiGet<any>(`/files/file_contents/retrieval/${modal.file_id}`);
                     if (fileContent && fileContent.pages && fileContent.pages.length > 0) {
@@ -366,11 +422,28 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                   } catch (error) {
                     console.error("Error retrieving PDF content from [modal] marker during polling:", error);
                   }
+                } else if (modal && modal.type === "requirements" && modal.usecase_id) {
+                  // Requirements modal
+                  try {
+                    const requirementsData = await apiGet<any>(`/requirements/${modal.usecase_id}/list`);
+                    if (requirementsData && requirementsData.requirements && requirementsData.requirements.length > 0) {
+                      requirementsContents.push({
+                        requirements: requirementsData.requirements,
+                        timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
+                      });
+                    }
+                  } catch (error) {
+                    console.error("Error retrieving requirements from [modal] marker during polling:", error);
+                  }
                 }
               }
               
               if (pdfContents.length > 0) {
                 setPdfContentMessages(pdfContents);
+              }
+              
+              if (requirementsContents.length > 0) {
+                setRequirementsMessages(requirementsContents);
               }
             }
             
@@ -741,6 +814,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                 }>> = [];
                 
                 const sortedPdfs = [...pdfContentMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+                const sortedRequirements = [...requirementsMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 
                 sortedPdfs.forEach((pdf) => {
                   // Find a group where this PDF's timestamp is within 5 seconds of any PDF in the group
@@ -765,11 +839,11 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                   }
                 });
                 
-                // Create items for rendering: messages and grouped PDFs
+                // Create items for rendering: messages, grouped PDFs, and requirements
                 const allItems: Array<{
-                  type: 'message' | 'pdf-group';
+                  type: 'message' | 'pdf-group' | 'requirements';
                   timestamp: Date;
-                  data: Message | Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }>;
+                  data: Message | Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }> | Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }>;
                 }> = [
                   ...messages.map(m => ({ type: 'message' as const, timestamp: m.timestamp, data: m })),
                   ...groupedPdfs.map(group => ({
@@ -780,6 +854,11 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                       fileName: p.fileName,
                       pages: p.pages
                     }))
+                  })),
+                  ...sortedRequirements.map(req => ({
+                    type: 'requirements' as const,
+                    timestamp: req.timestamp,
+                    data: req.requirements
                   }))
                 ].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 
@@ -790,6 +869,15 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                       <PdfContentMessage
                         key={`pdf-group-${idx}-${pdfFiles.map(f => f.fileId).join('-')}`}
                         files={pdfFiles}
+                      />
+                    );
+                  } else if (item.type === 'requirements') {
+                    const requirements = item.data as Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }>;
+                    return (
+                      <RequirementsMessage
+                        key={`requirements-${idx}-${requirements.map(r => r.id).join('-')}`}
+                        requirements={requirements}
+                        usecaseId={usecaseId || ""}
                       />
                     );
                   } else {

@@ -4,6 +4,7 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
     Boolean,
+    Integer,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID as pgUUID, JSON
@@ -25,6 +26,9 @@ class Requirement(Base):
         pgUUID(as_uuid=True), ForeignKey("usecase_metadata.usecase_id"), nullable=False
     )
     requirement_text = Column(JSON, nullable=False)
+
+    # Display ID: unique per usecase, assigned based on creation time (ascending order, starting from 1)
+    display_id = Column(Integer, nullable=True)
 
     # Status field to track generation of child elements
     is_child_generated = Column(Boolean, default=False, nullable=False)
