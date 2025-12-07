@@ -1,4 +1,4 @@
-            import { useState } from "react";
+            import { useState, useEffect } from "react";
 import { ChevronDown, User, Settings, BarChart3, LogOut } from "lucide-react";
 import {
   DropdownMenu,
@@ -11,22 +11,43 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useSidebar } from "@/components/ui/sidebar";
+import { apiGet } from "@/lib/utils";
 
 interface TopNavigationProps {
   currentModel: string;
   onModelChange: (model: string) => void;
 }
 
-const availableModels = [
-  { id: "cortexa-4-pro", name: "Cortexa-4 Pro", description: "Most capable model" },
-  { id: "cortexa-3.5-turbo", name: "Cortexa-3.5 Turbo", description: "Balanced performance" },
-  { id: "legacy-model", name: "Legacy Model", description: "Previous generation" },
-];
+interface Model {
+  id: string;
+  name: string;
+  description: string;
+}
 
 export function TopNavigation({ currentModel, onModelChange }: TopNavigationProps) {
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const { state: sidebarState } = useSidebar();
   const isSidebarCollapsed = sidebarState === "collapsed";
+
+  // Fetch models from backend
+  useEffect(() => {
+    async function fetchModels() {
+      try {
+        const response = await apiGet<{ models: Model[] }>("/api/v1/models");
+        if (response?.models) {
+          setAvailableModels(response.models);
+        }
+      } catch (error) {
+        console.error("Failed to fetch models:", error);
+        // Fallback to default models if API fails
+        setAvailableModels([
+          { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", description: "Fast and efficient model" },
+        ]);
+      }
+    }
+    fetchModels();
+  }, []);
 
   return (
     <div className="flex-1 transition-all duration-300">
@@ -39,7 +60,9 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
                 variant="ghost"
                 className="text-foreground hover:bg-accent hover:text-accent-foreground px-2 sm:px-3 py-2 h-8 sm:h-9 text-xs sm:text-sm md:text-base"
               >
-                <span className="font-medium">{currentModel}</span>
+                <span className="font-medium">
+                  {availableModels.find(m => m.id === currentModel)?.name || currentModel}
+                </span>
                 <ChevronDown className="ml-2 h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
@@ -52,11 +75,11 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
                 <DropdownMenuItem
                   key={model.id}
                   onClick={() => {
-                    onModelChange(model.name);
+                    onModelChange(model.id);
                     setIsModelDropdownOpen(false);
                   }}
                   className={`cursor-pointer ${
-                    currentModel === model.name
+                    currentModel === model.id
                       ? "bg-accent text-accent-foreground"
                       : "hover:bg-accent hover:text-accent-foreground"
                   }`}

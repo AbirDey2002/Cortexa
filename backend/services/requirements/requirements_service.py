@@ -83,7 +83,7 @@ def _yellow(text: str) -> str:
         return text
 
 
-def extract_requirement_list(markdown: str) -> List[Dict]:
+def extract_requirement_list(markdown: str, model_name: str = "gemini-2.5-flash") -> List[Dict]:
     # Prefer file-based prompt if provided to ease multiline editing
     prompt_file = get_env_variable("REQUIREMENT_LIST_PROMPT_FILE", "").strip()
     base_prompt: str
@@ -127,8 +127,8 @@ def extract_requirement_list(markdown: str) -> List[Dict]:
 
                 Document Context:""" + markdown
     
-    logger.info("requirements_service: invoking requirement list extractor, prompt_chars=%d", len(prompt))
-    raw = invoke_freeform_prompt(prompt)
+    logger.info("requirements_service: invoking requirement list extractor, prompt_chars=%d, model=%s", len(prompt), model_name)
+    raw = invoke_freeform_prompt(prompt, model_name=model_name)
     # Log COMPLETE raw output from the agent before any parsing (for parser adjustments)
     # Always log complete output, write to file if too long for console
     try:
@@ -260,7 +260,7 @@ def extract_requirement_list(markdown: str) -> List[Dict]:
     return items
 
 
-def extract_requirement_details(markdown: str, name: str, description: str, previously_generated: List[Dict]) -> Dict:
+def extract_requirement_details(markdown: str, name: str, description: str, previously_generated: List[Dict], model_name: str = "gemini-2.5-flash") -> Dict:
     prior_json = json.dumps(previously_generated) if previously_generated else "[]"
     details_prompt_file = get_env_variable("REQUIREMENT_DETAILS_PROMPT_FILE", "").strip()
     if details_prompt_file:
@@ -304,8 +304,8 @@ def extract_requirement_details(markdown: str, name: str, description: str, prev
         "Document Markdown (truncated):\n" + markdown
     )
     prompt = base_details_prompt + dynamic_parts
-    logger.info("requirements_service: invoking details extractor for '%s'", name)
-    raw = invoke_freeform_prompt(prompt)
+    logger.info("requirements_service: invoking details extractor for '%s', model=%s", name, model_name)
+    raw = invoke_freeform_prompt(prompt, model_name=model_name)
     # Log COMPLETE raw output from the agent before any parsing (for parser adjustments)
     # Always log complete output, write to file if too long for console
     try:

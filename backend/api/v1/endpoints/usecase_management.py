@@ -12,6 +12,7 @@ from deps import get_db
 from db.session import get_db_context
 from models.usecase.usecase import UsecaseMetadata
 from models.user.user import User
+from core.model_registry import is_valid_model, get_default_model
 from services.llm.gemini_conversational.gemini_invoker import (
     invoke_gemini_chat_with_history_management,
 )
@@ -31,6 +32,10 @@ router = APIRouter()
 
 # Create a separate router for frontend-specific endpoints
 frontend_router = APIRouter()
+
+
+class UpdateModelRequest(BaseModel):
+    model: str
 
 
 @frontend_router.get("/{usecase_id}/chat")
@@ -132,6 +137,7 @@ class UsecaseResponse(BaseModel):
     test_script_generation: str
     email: str
     status: str
+    selected_model: str | None = None
 
     class Config:
         from_attributes = True
@@ -435,4 +441,42 @@ def get_usecase(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Usecase not found")
     return record
 
+
+@frontend_router.post("/{usecase_id}/model")
+def update_usecase_model_frontend(usecase_id: uuid.UUID, payload: UpdateModelRequest, db: Session = Depends(get_db)):
+    """
+    Update the selected model for a usecase (frontend endpoint).
+    
+    Args:
+        usecase_id: The usecase identifier
+        payload: Request body containing model ID
+        
+    Returns:
+        Success message with updated model
+    """
+    # Validate model
+    if not is_valid_model(payload.model):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model '{payload.model}'. Use /api/v1/models to see available models."
+        )
+    
+    # Get usecase
+    record = db.query(UsecaseMetadata).filter(
+        UsecaseMetadata.usecase_id == usecase_id,
+        UsecaseMetadata.is_deleted == False
+    ).first()
+    
+    if not record:
+        raise HTTPException(status_code=404, detail="Usecase not found")
+    
+    # Update model
+    record.selected_model = payload.model
+    db.commit()
+    
+    return {
+        "usecase_id": str(usecase_id),
+        "selected_model": payload.model,
+        "message": "Model updated successfully"
+    }
 

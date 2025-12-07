@@ -46,13 +46,14 @@ CORTEXA_SYSTEM_PROMPT = create_enhanced_cortexa_prompt()
 # Logger
 logger = logging.getLogger(__name__)
 
-def invoke_gemini_chat(query: str, chat_history: Optional[list] = None, timeout_seconds: int = 60) -> Tuple[str, float, int]:
+def invoke_gemini_chat(query: str, chat_history: Optional[list] = None, model_name: str = "gemini-2.5-flash", timeout_seconds: int = 60) -> Tuple[str, float, int]:
     """
-    Invoke Google Gemini 2.5 Flash for conversational AI.
+    Invoke Google Gemini for conversational AI.
 
     Args:
         query (str): The user's message/query
         chat_history (list, optional): List of previous chat messages
+        model_name (str): Model name to use (default: gemini-2.5-flash)
         timeout_seconds (int): Maximum time to wait for response
 
     Returns:
@@ -66,7 +67,7 @@ def invoke_gemini_chat(query: str, chat_history: Optional[list] = None, timeout_
     try:
         # Initialize the model
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
+            model_name=model_name,
             system_instruction=CORTEXA_SYSTEM_PROMPT
         )
         
@@ -207,15 +208,19 @@ def _requirements_log_dir() -> str:
     return base
 
 
-def invoke_freeform_prompt(prompt: str) -> str:
+def invoke_freeform_prompt(prompt: str, model_name: str = "gemini-2.5-flash") -> str:
     """Send a single freeform prompt to Gemini and return raw text.
 
     Logs full prompt/response to console and writes to backend/logs/requirements.
+    
+    Args:
+        prompt (str): The prompt to send
+        model_name (str): Model name to use (default: gemini-2.5-flash)
     """
     if not GEMINI_API_KEY:
         logger.error("invoke_freeform_prompt: GEMINI_API_KEY not set")
         return ""
-    model = genai.GenerativeModel(model_name="gemini-2.5-flash")
+    model = genai.GenerativeModel(model_name=model_name)
     ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
     log_dir = _requirements_log_dir()
     in_path = os.path.join(log_dir, f"{ts}-freeform-in.txt")
@@ -293,6 +298,7 @@ async def invoke_gemini_chat_with_history_management(
     chat_history: List[Dict],
     chat_summary: Optional[str],
     db: Session,
+    model_name: str = "gemini-2.5-flash",
     timeout_seconds: int = 300
 ) -> Tuple[str, float, int, List[Dict], Optional[str], bool]:
     """
@@ -336,12 +342,12 @@ async def invoke_gemini_chat_with_history_management(
             user_query=query,
             api_key=GEMINI_API_KEY,
             db=db,
-            model_name="gemini-2.5-flash"
+            model_name=model_name
         )
         
         # Initialize the model
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
+            model_name=model_name,
             system_instruction=CORTEXA_SYSTEM_PROMPT
         )
         

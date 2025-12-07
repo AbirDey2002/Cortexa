@@ -12,6 +12,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { RequirementsGenerationConfirmModal } from "@/components/chat/RequirementsGenerationConfirmModal";
+import { ScenariosGenerationConfirmModal } from "@/components/chat/ScenariosGenerationConfirmModal";
 import { PdfContentMessage } from "@/components/chat/PdfContentMessage";
 import { RequirementsMessage } from "@/components/chat/RequirementsMessage";
 
@@ -81,9 +82,11 @@ interface SelectedFile {
 interface Props {
   userId: string;
   usecaseId: string | null;
+  currentModel?: string;
+  onModelChange?: (modelId: string) => void;
 }
 
-export function ChatInterface({ userId, usecaseId }: Props) {
+export function ChatInterface({ userId, usecaseId, currentModel: propCurrentModel, onModelChange }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
   const [inputValue, setInputValue] = useState("");
@@ -97,8 +100,23 @@ export function ChatInterface({ userId, usecaseId }: Props) {
   const [lastReqGenCheckedUsecaseId, setLastReqGenCheckedUsecaseId] = useState<string | null>(null);
   const [reqGenConfirmed, setReqGenConfirmed] = useState<boolean>(false);
   const handledModalUsecasesRef = useRef<Record<string, boolean>>({});
+  const [scenarioGenConfirmOpen, setScenarioGenConfirmOpen] = useState(false);
+  const [isScenarioGenBlocking, setIsScenarioGenBlocking] = useState(false);
+  const scenarioGenPollTimerRef = useRef<number | null>(null);
+  const [scenarioGenStatus, setScenarioGenStatus] = useState<"Not Started" | "In Progress" | "Completed" | "Failed" | "">("");
+  const [lastScenarioGenCheckedUsecaseId, setLastScenarioGenCheckedUsecaseId] = useState<string | null>(null);
+  const [scenarioGenConfirmed, setScenarioGenConfirmed] = useState<boolean>(false);
+  const handledScenarioModalUsecasesRef = useRef<Record<string, boolean>>({});
   const ocrBannerTimerRef = useRef<number | null>(null);
   const [pendingFiles, setPendingFiles] = useState<SelectedFile[]>([]);
+  const [currentModel, setCurrentModel] = useState<string>(propCurrentModel || "gemini-2.5-flash-lite");
+  
+  // Sync with prop if provided
+  useEffect(() => {
+    if (propCurrentModel !== undefined) {
+      setCurrentModel(propCurrentModel);
+    }
+  }, [propCurrentModel]);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewContent, setPreviewContent] = useState("");
   const [previewTitle, setPreviewTitle] = useState("");
@@ -144,6 +162,17 @@ export function ChatInterface({ userId, usecaseId }: Props) {
         setRequirementsMessages([]);
         setReqGenStatus("");
         setLastReqGenCheckedUsecaseId(null);
+        setScenarioGenStatus("");
+        setLastScenarioGenCheckedUsecaseId(null);
+        // Cleanup polling timers
+        if (reqGenPollTimerRef.current) {
+          window.clearInterval(reqGenPollTimerRef.current);
+          reqGenPollTimerRef.current = null;
+        }
+        if (scenarioGenPollTimerRef.current) {
+          window.clearInterval(scenarioGenPollTimerRef.current);
+          scenarioGenPollTimerRef.current = null;
+        }
         return;
       }
       try {
@@ -167,6 +196,60 @@ export function ChatInterface({ userId, usecaseId }: Props) {
             setIsReqGenBlocking(false);
           }
         } catch {}
+        // Initialize scenario generation status banner on usecase change
+        try {
+          const sg = await apiGet<any>(`/scenarios/${usecaseId}/status`);
+          const sgState = String(sg?.scenario_generation || "").trim().toLowerCase();
+          setScenarioGenStatus((sgState === "completed") ? "Completed" : (sgState === "in progress") ? "In Progress" : (sgState === "failed") ? "Failed" : "Not Started");
+          setLastScenarioGenCheckedUsecaseId(usecaseId);
+          if (sg?.scenario_generation === "In Progress") {
+            setIsScenarioGenBlocking(true);
+            // Start polling if in progress
+            if (scenarioGenPollTimerRef.current) {
+              window.clearInterval(scenarioGenPollTimerRef.current);
+            }
+            scenarioGenPollTimerRef.current = window.setInterval(async () => {
+              try {
+                const statusData = await apiGet<any>(`/scenarios/${usecaseId}/status`);
+                if (statusData) {
+                  const newStatus = statusData.scenario_generation || "Not Started";
+                  setScenarioGenStatus(newStatus);
+                  if (newStatus === "Completed" || newStatus === "Failed") {
+                    if (scenarioGenPollTimerRef.current) {
+                      window.clearInterval(scenarioGenPollTimerRef.current);
+                      scenarioGenPollTimerRef.current = null;
+                    }
+                    setIsScenarioGenBlocking(false);
+                  }
+                }
+              } catch (error) {
+                console.error("Error polling scenario generation status:", error);
+                if (scenarioGenPollTimerRef.current) {
+                  window.clearInterval(scenarioGenPollTimerRef.current);
+                  scenarioGenPollTimerRef.current = null;
+                }
+                setIsScenarioGenBlocking(false);
+              }
+            }, 6000);
+          } else if (sg?.scenario_generation === "Completed" || sg?.scenario_generation === "Failed") {
+            setIsScenarioGenBlocking(false);
+          }
+        } catch {}
+        
+        // Load model from usecase (only if not controlled by parent)
+        if (propCurrentModel === undefined) {
+          try {
+            const usecaseData = await apiGet<any>(`/usecases/${usecaseId}`);
+            if (usecaseData?.selected_model) {
+              setCurrentModel(usecaseData.selected_model);
+              // Notify parent if callback provided
+              if (onModelChange) {
+                onModelChange(usecaseData.selected_model);
+              }
+            }
+          } catch {}
+        }
+        
         // Fetch unified chat history (Gemini-backed backend writes to same store)
         const history = await apiGet<any[]>(`/frontend/usecases/${usecaseId}/chat`);
         if (cancelled) return;
@@ -231,6 +314,26 @@ export function ChatInterface({ userId, usecaseId }: Props) {
               setWaitingForResponse(false);
               setIsLoading(false);
               setReqGenStatus("In Progress");
+            } else if (obj && obj.system_event === "scenario_generation_confirmation_required") {
+              // Only react to fresh latest assistant message for this usecase, and if not already handled/confirmed
+              const isLatest = idx === sortedHistory.length - 1;
+              const alreadyHandled = !!handledScenarioModalUsecasesRef.current[usecaseId];
+              if (!isLatest || alreadyHandled || scenarioGenConfirmed) {
+                // ignore historical or already-handled events
+              } else {
+                console.debug("system_event detected: scenario_generation_confirmation_required");
+                setScenarioGenConfirmOpen(true);
+                setIsScenarioGenBlocking(true);
+                setWaitingForResponse(false);
+                setIsLoading(false);
+                shown = "I've identified requirements ready for scenario generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+              }
+            } else if (obj && obj.system_event === "scenario_generation_in_progress") {
+              console.debug("system_event detected: scenario_generation_in_progress");
+              setIsScenarioGenBlocking(true);
+              setWaitingForResponse(false);
+              setIsLoading(false);
+              setScenarioGenStatus("In Progress");
             } else if (obj && obj.user_answer) {
               shown = obj.user_answer;
             }
@@ -495,6 +598,24 @@ export function ChatInterface({ userId, usecaseId }: Props) {
                   setWaitingForResponse(false);
                   setIsLoading(false);
                   setReqGenStatus("In Progress");
+                } else if (obj && obj.system_event === "scenario_generation_confirmation_required") {
+                  const isLatest = idx === sortedHistory.length - 1;
+                  const alreadyHandled = !!handledScenarioModalUsecasesRef.current[usecaseId!];
+                  if (isLatest && !alreadyHandled && !scenarioGenConfirmed) {
+                    console.debug("system_event detected (poll loop): scenario_generation_confirmation_required");
+                    setScenarioGenConfirmOpen(true);
+                    setIsScenarioGenBlocking(true);
+                    setWaitingForResponse(false);
+                    setIsLoading(false);
+                    setScenarioGenStatus("Not Started");
+                    shown = "I've identified requirements ready for scenario generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+                  }
+                } else if (obj && obj.system_event === "scenario_generation_in_progress") {
+                  console.debug("system_event detected (poll loop): scenario_generation_in_progress");
+                  setIsScenarioGenBlocking(true);
+                  setWaitingForResponse(false);
+                  setIsLoading(false);
+                  setScenarioGenStatus("In Progress");
                 } else if (obj && obj.user_answer) {
                   shown = obj.user_answer;
                 }
@@ -621,7 +742,9 @@ export function ChatInterface({ userId, usecaseId }: Props) {
       }
 
       // Send chat message with file information if available
-      const chatPayload: any = { role: "user", content: messageContent };
+      // Use prop model if provided, otherwise use local state
+      const modelToUse = propCurrentModel !== undefined ? propCurrentModel : currentModel;
+      const chatPayload: any = { role: "user", content: messageContent, model: modelToUse };
       if (filesToUpload.length > 0) {
         chatPayload.files = filesToUpload.map(file => ({
           name: file.name,
@@ -978,7 +1101,7 @@ export function ChatInterface({ userId, usecaseId }: Props) {
               onSend={handleSend}
               onFileUpload={handleFileUpload}
               onKeyPress={handleKeyPress}
-              isDisabled={status === "In Progress" || isLoading || reqGenConfirmOpen}
+              isDisabled={status === "In Progress" || isLoading || reqGenConfirmOpen || scenarioGenConfirmOpen}
             />
             
             <input
@@ -1003,6 +1126,83 @@ export function ChatInterface({ userId, usecaseId }: Props) {
           />
         </div>
       )}
+
+      <ScenariosGenerationConfirmModal
+        open={scenarioGenConfirmOpen}
+        onConfirm={async () => {
+          if (!usecaseId) { setScenarioGenConfirmOpen(false); return; }
+          // Optimistically prevent re-opening for this usecase in current session
+          handledScenarioModalUsecasesRef.current[usecaseId] = true;
+          setScenarioGenConfirmOpen(false);
+          setIsScenarioGenBlocking(true);
+          setIsLoading(false);
+          setWaitingForResponse(false);
+          try {
+            await apiPost(`/scenarios/${usecaseId}/generate`, {});
+            // Start polling scenario generation status every 6s
+            if (scenarioGenPollTimerRef.current) {
+              window.clearInterval(scenarioGenPollTimerRef.current);
+            }
+            const startedAt = Date.now();
+            scenarioGenPollTimerRef.current = window.setInterval(async () => {
+              try {
+                const statusData = await apiGet<any>(`/scenarios/${usecaseId}/status`);
+                if (statusData) {
+                  const newStatus = statusData.scenario_generation || "Not Started";
+                  setScenarioGenStatus(newStatus);
+                  setLastScenarioGenCheckedUsecaseId(usecaseId);
+                  if (newStatus === "Completed" || newStatus === "Failed") {
+                    if (scenarioGenPollTimerRef.current) {
+                      window.clearInterval(scenarioGenPollTimerRef.current);
+                      scenarioGenPollTimerRef.current = null;
+                    }
+                    setIsScenarioGenBlocking(false);
+                    if (newStatus === "Completed") {
+                      toast({
+                        title: "Scenario generation completed",
+                        description: `Generated ${statusData.total_inserted || 0} scenarios successfully.`,
+                      });
+                    } else {
+                      toast({
+                        title: "Scenario generation failed",
+                        description: "Scenario generation encountered an error. Please try again.",
+                        variant: "destructive",
+                      });
+                    }
+                  }
+                }
+              } catch (error) {
+                console.error("Error polling scenario generation status:", error);
+                // Stop polling on error
+                if (scenarioGenPollTimerRef.current) {
+                  window.clearInterval(scenarioGenPollTimerRef.current);
+                  scenarioGenPollTimerRef.current = null;
+                }
+                setIsScenarioGenBlocking(false);
+              }
+            }, 6000);
+            setScenarioGenStatus("In Progress");
+            toast({
+              title: "Scenario generation started",
+              description: "Scenarios are being generated in the background. You'll be notified when complete.",
+            });
+          } catch (error) {
+            console.error("Error starting scenario generation:", error);
+            setIsScenarioGenBlocking(false);
+            toast({
+              title: "Error",
+              description: "Failed to start scenario generation. Please try again.",
+              variant: "destructive",
+            });
+          }
+        }}
+        onCancel={() => {
+          setScenarioGenConfirmOpen(false);
+          setIsScenarioGenBlocking(false);
+          setIsLoading(false);
+          setWaitingForResponse(false);
+        }}
+      />
 
       <RequirementsGenerationConfirmModal
         open={reqGenConfirmOpen}

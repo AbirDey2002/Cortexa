@@ -2,6 +2,7 @@ import React, { useState, useRef } from "react";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { ChatPanel } from "./ChatPanel";
+import { apiPost } from "@/lib/utils";
 
 interface MainLayoutProps {
   children?: React.ReactNode;
@@ -32,8 +33,20 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
   onRemoveFile,
   onFileUpload
 }) => {
-  const [currentModel, setCurrentModel] = useState("Cortexa-4 Pro");
+  const [currentModel, setCurrentModel] = useState("gemini-2.5-flash-lite");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  const handleModelChange = async (modelId: string) => {
+    setCurrentModel(modelId);
+    // Update usecase model if usecase is selected
+    if (activeUsecaseId) {
+      try {
+        await apiPost(`/frontend/usecases/${activeUsecaseId}/model`, { model: modelId });
+      } catch (error) {
+        console.error("Failed to update usecase model:", error);
+      }
+    }
+  };
   
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -59,7 +72,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         <div className="w-full">
           <ChatPanel
           currentModel={currentModel}
-          onModelChange={setCurrentModel}
+          onModelChange={handleModelChange}
           inputValue={inputValue}
           onInputChange={onInputChange}
           onSend={onSendMessage}

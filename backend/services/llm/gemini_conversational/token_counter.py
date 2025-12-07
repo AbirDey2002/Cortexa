@@ -14,10 +14,13 @@ import google.generativeai as genai
 logger = logging.getLogger(__name__)
 
 # Token limits for different Gemini models
+# Note: This is kept for backward compatibility. New code should use model_registry.
 GEMINI_TOKEN_LIMITS = {
     "gemini-2.5-flash": 250_000,    # 250k token context window
     "gemini-2.5-pro": 250_000,      # 250k token context window  
     "gemini-2.0-flash": 250_000,    # 250k token context window
+    "gemini-2.5-flash-lite": 250_000,  # 250k token context window
+    "gemini-2.0-flash-live": 250_000,  # 250k token context window
 }
 
 # Conservative estimate for tokens per character (Gemini uses subword tokenization)
@@ -93,14 +96,18 @@ def count_tokens_in_summary(summary: str) -> int:
 
 def get_token_limit_for_model(model_name: str) -> int:
     """
-    Get the token limit for a specific Gemini model.
-    
-    Args:
-        model_name (str): Name of the Gemini model
-        
-    Returns:
-        int: Token limit for the model
+    Get token limit for a model. First checks model_registry, then falls back to local dict.
     """
+    # Try to get from model registry first
+    try:
+        from core.model_registry import get_model_by_id
+        model_info = get_model_by_id(model_name)
+        if model_info:
+            return model_info.token_limit
+    except Exception:
+        pass
+    
+    # Fallback to local dict
     # Remove "models/" prefix if present
     clean_model_name = model_name.replace("models/", "")
     

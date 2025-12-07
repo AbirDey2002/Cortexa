@@ -6,9 +6,10 @@ from sqlalchemy import (
     String,
     Boolean,
     Text,
+    Integer,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID as pgUUID
+from sqlalchemy.dialects.postgresql import UUID as pgUUID, JSON
 from sqlalchemy.orm import relationship
 
 from ..base import Base
@@ -26,7 +27,10 @@ class Scenario(Base):
     requirement_id = Column(
         pgUUID(as_uuid=True), ForeignKey("requirements.id"), nullable=False
     )
-    scenario_text = Column(Text, nullable=False)
+    scenario_text = Column(JSON, nullable=False)
+
+    # Display ID: unique per usecase, assigned based on creation time (ascending order, starting from 1)
+    display_id = Column(Integer, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, default=func.now(), nullable=False)

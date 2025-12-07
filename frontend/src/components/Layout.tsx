@@ -3,7 +3,7 @@ import { SidebarProvider, SidebarTrigger, SidebarInset, Sidebar } from "@/compon
 import { AppSidebar } from "@/components/AppSidebar";
 import { TopNavigation } from "@/components/TopNavigation";
 import { ChatInterface } from "@/components/ChatInterface";
-import { apiGet } from "@/lib/utils";
+import { apiGet, apiPost } from "@/lib/utils";
 
 interface LayoutProps {
   children?: React.ReactNode;
@@ -12,10 +12,25 @@ interface LayoutProps {
 }
 
 export function Layout({ children, initialUsecaseId, onUsecaseChange }: LayoutProps) {
-  const [currentModel, setCurrentModel] = useState("Cortexa-4 Pro");
+  const [currentModel, setCurrentModel] = useState("gemini-2.5-flash-lite");
   const [userId, setUserId] = useState<string>("");
   const [activeUsecaseId, setActiveUsecaseId] = useState<string | null>(null);
   
+  // Load model from usecase when usecase changes
+  useEffect(() => {
+    if (activeUsecaseId) {
+      (async () => {
+        try {
+          const usecaseData = await apiGet<any>(`/usecases/${activeUsecaseId}`);
+          if (usecaseData?.selected_model) {
+            setCurrentModel(usecaseData.selected_model);
+          }
+        } catch (error) {
+          console.error("Failed to load usecase model:", error);
+        }
+      })();
+    }
+  }, [activeUsecaseId]);
 
   // Use hardcoded user ID from backend
   useEffect(() => {
@@ -97,13 +112,33 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange }: LayoutPr
             <div className="flex-1">
               <TopNavigation 
                 currentModel={currentModel}
-                onModelChange={setCurrentModel}
+                onModelChange={async (modelId: string) => {
+                  setCurrentModel(modelId);
+                  // Update usecase model if usecase is selected
+                  if (activeUsecaseId) {
+                    try {
+                      await apiPost(`/frontend/usecases/${activeUsecaseId}/model`, { model: modelId });
+                    } catch (error) {
+                      console.error("Failed to update usecase model:", error);
+                    }
+                  }
+                }}
               />
             </div>
           </div>
 
           <main className="flex-1 overflow-hidden">
-            {children || <ChatInterface userId={userId} usecaseId={activeUsecaseId} />}
+            {children || <ChatInterface userId={userId} usecaseId={activeUsecaseId} currentModel={currentModel} onModelChange={async (modelId: string) => {
+              setCurrentModel(modelId);
+              // Update usecase model if usecase is selected
+              if (activeUsecaseId) {
+                try {
+                  await apiPost(`/frontend/usecases/${activeUsecaseId}/model`, { model: modelId });
+                } catch (error) {
+                  console.error("Failed to update usecase model:", error);
+                }
+              }
+            }} />}
           </main>
         </SidebarInset>
       </div>

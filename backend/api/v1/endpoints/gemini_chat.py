@@ -29,6 +29,7 @@ from services.llm.gemini_conversational.history_manager import manage_chat_histo
 from services.agent.agent_runner import run_agent_turn
 import google.generativeai as genai
 from core.env_config import get_env_variable
+from core.model_registry import is_valid_model, get_default_model
 
 # Hardcoded email for authentication
 DEFAULT_EMAIL = "abir.dey@intellectdesign.com"
@@ -50,6 +51,7 @@ class ChatMessage(BaseModel):
     role: str
     content: str
     files: list[dict] | None = None  # Optional file information
+    model: str | None = None  # Optional model selection
 
 
 def _utc_now_iso() -> str:
@@ -150,9 +152,15 @@ def _check_for_tool_call_gemini(raw_output: str) -> tuple[bool, str, dict]:
     return False, "", {}
 
 
-def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, timeout_seconds: int = 300):
+def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, model: str | None = None, timeout_seconds: int = 300):
     """
     Enhanced Gemini chat inference with automatic history management and summarization.
+    
+    Args:
+        usecase_id: The usecase identifier
+        user_message: The user's message
+        model: Optional model ID. If not provided, uses usecase's selected_model or default
+        timeout_seconds: Timeout for the operation
     """
     logger = logging.getLogger(__name__)
     
@@ -167,7 +175,21 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, ti
                 logger.error(f"Usecase {usecase_id} not found")
                 return
             
-            logger.info(f"Starting enhanced Gemini chat inference for usecase_id={usecase_id}")
+            # Determine which model to use: request model > usecase model > default
+            selected_model = model or record.selected_model or get_default_model()
+            
+            # Validate model
+            if not is_valid_model(selected_model):
+                logger.warning(f"Invalid model '{selected_model}', falling back to default")
+                selected_model = get_default_model()
+            
+            # Update usecase with selected model if provided in request
+            if model and model != record.selected_model:
+                record.selected_model = model
+                db.commit()
+                logger.info(f"Updated usecase {usecase_id} model to {model}")
+            
+            logger.info(f"Starting enhanced Gemini chat inference for usecase_id={usecase_id} with model={selected_model}")
             
             # Get current chat history and summary
             chat_history = record.chat_history or []
@@ -188,12 +210,12 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, ti
                         user_query=user_message,
                         api_key=GEMINI_API_KEY,
                         db=db,
-                        model_name="gemini-2.5-flash"
+                        model_name=selected_model
                     )
                 )
 
                 # Delegate to deep agent for orchestration
-                assistant_text, traces = run_agent_turn(usecase_id, user_message)
+                assistant_text, traces = run_agent_turn(usecase_id, user_message, model=selected_model)
                 gemini_streaming_responses[str(usecase_id)] = assistant_text
 
                 # First pass logging
@@ -434,7 +456,7 @@ async def append_gemini_chat_message(usecase_id: uuid.UUID, payload: ChatMessage
     # No automatic marker creation here - markers only created when user explicitly asks to see PDF
     
     # Fire background inference with Gemini
-    background_tasks.add_task(_run_gemini_chat_inference_sync, usecase_id, payload.content)
+    background_tasks.add_task(_run_gemini_chat_inference_sync, usecase_id, payload.content, payload.model)
     return {"status": "accepted", "usecase_id": str(usecase_id), "provider": "gemini"}
 
 
