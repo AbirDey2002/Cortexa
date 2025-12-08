@@ -300,3 +300,174 @@ def list_scenarios(usecase_id: UUID, db: Session = Depends(get_db)):
         logger.error("list_scenarios error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Error getting scenarios list")
 
+
+@router.get("/{usecase_id}/list-flat")
+def list_scenarios_flat(usecase_id: UUID, db: Session = Depends(get_db)):
+    """
+    Get all scenarios for a usecase as a flat list.
+    Returns scenarios in a format suitable for frontend display.
+    Similar to list_requirements endpoint.
+    """
+    try:
+        record = db.query(UsecaseMetadata).filter(
+            UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.is_deleted == False,
+        ).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Usecase not found")
+
+        # Query all non-deleted scenarios for the usecase (via Requirement join)
+        scenarios = db.query(Scenario).join(Requirement).filter(
+            Requirement.usecase_id == usecase_id,
+            Scenario.is_deleted == False,
+            Requirement.is_deleted == False,
+        ).order_by(Scenario.display_id.asc()).all()
+
+        # Transform scenario_text JSON to match frontend expected format
+        scenarios_list = []
+        for scen in scenarios:
+            scen_text = scen.scenario_text or {}
+            
+            # Extract fields from scenario_text JSON
+            scenario_name = scen_text.get("ScenarioName", f"Scenario {scen.display_id}")
+            scenario_description = scen_text.get("ScenarioDescription", "")
+            scenario_id = scen_text.get("ScenarioID", "")
+            flows = scen_text.get("Flows", [])
+            
+            # Get requirement display_id
+            requirement = db.query(Requirement).filter(Requirement.id == scen.requirement_id).first()
+            requirement_display_id = requirement.display_id if requirement else None
+            
+            scenarios_list.append({
+                "id": str(scen.id),
+                "display_id": scen.display_id,
+                "scenario_name": scenario_name,
+                "scenario_description": scenario_description,
+                "scenario_id": scenario_id,
+                "requirement_id": str(scen.requirement_id),
+                "requirement_display_id": requirement_display_id,
+                "flows": flows,
+                "created_at": scen.created_at.isoformat() if scen.created_at else None,
+            })
+
+        payload = {
+            "scenarios": scenarios_list,
+            "count": len(scenarios_list),
+        }
+        logger.info(_blue(f"list_scenarios_flat: usecase={usecase_id} count={len(scenarios_list)}"))
+        return payload
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("list_scenarios_flat error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Error getting scenarios list")
+
+
+@router.get("/{usecase_id}/read/{display_id}")
+def read_scenario(usecase_id: UUID, display_id: int, db: Session = Depends(get_db)):
+    """
+    Read a specific scenario by display_id for agent analysis.
+    Returns scenario_text as formatted text (similar to OCR combined_markdown).
+    """
+    try:
+        # Verify usecase exists
+        record = db.query(UsecaseMetadata).filter(
+            UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.is_deleted == False,
+        ).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Usecase not found")
+
+        # Check scenario_generation status
+        scenario_gen_status = record.scenario_generation or "Not Started"
+        if scenario_gen_status not in ("In Progress", "Completed"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Scenario generation is '{scenario_gen_status}'. Scenarios are not available yet."
+            )
+
+        # Find scenario by usecase_id (via Requirement join) and display_id
+        scenario = db.query(Scenario).join(Requirement).filter(
+            Requirement.usecase_id == usecase_id,
+            Scenario.display_id == display_id,
+            Scenario.is_deleted == False,
+            Requirement.is_deleted == False,
+        ).first()
+
+        if not scenario:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Scenario with display_id {display_id} not found for this usecase"
+            )
+
+        # Get scenario_text JSON
+        scen_text = scenario.scenario_text or {}
+        
+        # Format as readable text (similar to OCR combined_markdown format)
+        formatted_text_parts = []
+        
+        # Add scenario name
+        name = scen_text.get("ScenarioName", "")
+        if name:
+            formatted_text_parts.append(f"## Scenario: {name}\n")
+        
+        # Add description
+        description = scen_text.get("ScenarioDescription", "")
+        if description:
+            formatted_text_parts.append(f"### Description\n{description}\n")
+        
+        # Add scenario ID
+        scenario_id = scen_text.get("ScenarioID", "")
+        if scenario_id:
+            formatted_text_parts.append(f"### Scenario ID\n{scenario_id}\n")
+        
+        # Add flows
+        flows = scen_text.get("Flows", [])
+        if flows:
+            formatted_text_parts.append("### Flows\n")
+            for idx, flow in enumerate(flows, start=1):
+                formatted_text_parts.append(f"#### Flow {idx}\n")
+                
+                flow_type = flow.get("Type", "")
+                if flow_type:
+                    formatted_text_parts.append(f"**Type**: {flow_type}\n")
+                
+                flow_description = flow.get("Description", "")
+                if flow_description:
+                    formatted_text_parts.append(f"**Description**: {flow_description}\n")
+                
+                flow_coverage = flow.get("Coverage", "")
+                if flow_coverage:
+                    formatted_text_parts.append(f"**Coverage**: {flow_coverage}\n")
+                
+                flow_expected_results = flow.get("ExpectedResults", "")
+                if flow_expected_results:
+                    formatted_text_parts.append(f"**Expected Results**: {flow_expected_results}\n")
+                
+                formatted_text_parts.append("\n")
+        
+        # Combine all parts
+        formatted_text = "\n".join(formatted_text_parts)
+        
+        total_chars = len(formatted_text)
+        
+        logger.info(_blue(
+            f"read_scenario: usecase={usecase_id} display_id={display_id} "
+            f"scenario_id={scenario.id} total_chars={total_chars}"
+        ))
+        
+        return {
+            "usecase_id": str(usecase_id),
+            "display_id": display_id,
+            "scenario_id": str(scenario.id),
+            "scenario_text": formatted_text,
+            "scenario_json": scen_text,  # Also include raw JSON for reference
+            "total_chars": total_chars,
+            "message": f"Retrieved scenario TS-{display_id}: {name} ({total_chars} characters)."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("read_scenario error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Error reading scenario")
+

@@ -16,11 +16,107 @@ interface Requirement {
 interface RequirementCardProps {
   requirement: Requirement;
   index: number;
+  isInExpandedView?: boolean;
+  searchQuery?: string;
 }
 
-export function RequirementCard({ requirement, index }: RequirementCardProps) {
+export function RequirementCard({ requirement, index, isInExpandedView = false, searchQuery = "" }: RequirementCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
+  const descriptionRef = useRef<HTMLDivElement>(null);
+  const [needsScrolling, setNeedsScrolling] = useState(false);
+  
+  // HighlightedText component for search highlighting
+  const HighlightedText = ({ text, query }: { text: string; query: string }) => {
+    if (!query.trim()) return <span>{text}</span>;
+    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    const parts = text.split(regex);
+    return (
+      <>
+        {parts.map((part, i) => 
+          part.toLowerCase() === query.toLowerCase() ? (
+            <mark key={i} className="bg-yellow-400 text-black">{part}</mark>
+          ) : (
+            <span key={i}>{part}</span>
+          )
+        )}
+      </>
+    );
+  };
+
+  // ScrollingText component for long descriptions
+  const ScrollingText = ({ text, query }: { text: string; query: string }) => {
+    const textRef = useRef<HTMLDivElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [shouldScroll, setShouldScroll] = useState(false);
+    const [textWidth, setTextWidth] = useState(0);
+
+    useEffect(() => {
+      if (textRef.current && containerRef.current) {
+        const measuredWidth = textRef.current.scrollWidth;
+        const containerWidth = containerRef.current.offsetWidth;
+        setTextWidth(measuredWidth);
+        setShouldScroll(measuredWidth > containerWidth);
+      }
+    }, [text, query]);
+
+    if (!shouldScroll) {
+      return (
+        <div ref={containerRef} className="overflow-hidden">
+          {query ? (
+            <HighlightedText text={text} query={query} />
+          ) : (
+            <span>{text}</span>
+          )}
+        </div>
+      );
+    }
+
+    // Calculate animation duration based on text width (roughly 50px per second)
+    const duration = Math.max(10, textWidth / 50);
+
+    return (
+      <div 
+        ref={containerRef}
+        className="relative overflow-hidden"
+        style={{ width: '100%' }}
+      >
+        <div
+          ref={textRef}
+          className="inline-flex whitespace-nowrap"
+          style={{
+            animation: shouldScroll ? `scroll-text-${index} ${duration}s linear infinite` : 'none',
+          }}
+        >
+          <span style={{ paddingRight: '3rem' }}>
+            {query ? (
+              <HighlightedText text={text} query={query} />
+            ) : (
+              <span>{text}</span>
+            )}
+          </span>
+          {/* Duplicate for seamless loop */}
+          <span style={{ paddingRight: '3rem' }}>
+            {query ? (
+              <HighlightedText text={text} query={query} />
+            ) : (
+              <span>{text}</span>
+            )}
+          </span>
+        </div>
+        <style>{`
+          @keyframes scroll-text-${index} {
+            0% {
+              transform: translateX(0);
+            }
+            100% {
+              transform: translateX(calc(-50% - 1.5rem));
+            }
+          }
+        `}</style>
+      </div>
+    );
+  };
 
   // Scroll into view when expanded
   useEffect(() => {
@@ -151,11 +247,37 @@ export function RequirementCard({ requirement, index }: RequirementCardProps) {
           </Button>
           <div className="flex-1 min-w-0" style={{ width: '100%', maxWidth: '100%', minWidth: 0, overflow: 'hidden' }}>
             <div className="text-sm font-semibold text-foreground truncate break-words" style={{ wordWrap: 'break-word', overflowWrap: 'break-word' }}>
-              {requirement.display_id ? `REQ-${requirement.display_id} : ` : ''}{requirement.name || `Requirement ${index + 1}`}
+              {requirement.display_id ? `REQ-${requirement.display_id} : ` : ''}
+              {searchQuery ? (
+                <HighlightedText text={requirement.name || `Requirement ${index + 1}`} query={searchQuery} />
+              ) : (
+                requirement.name || `Requirement ${index + 1}`
+              )}
             </div>
             {!isExpanded && requirement.description && (
-              <div className="text-xs text-muted-foreground truncate break-words mt-1" style={{ wordWrap: 'break-word', overflowWrap: 'break-word' }}>
-                {requirement.description}
+              <div 
+                className="text-xs text-muted-foreground mt-1 overflow-hidden"
+                style={{ 
+                  width: '100%',
+                  maxWidth: '100%',
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {(() => {
+                  // Use 125 chars when RequirementsMessage is collapsed, 300 when expanded
+                  const maxLength = isInExpandedView ? 300 : 125;
+                  const truncated = requirement.description.length > maxLength 
+                    ? requirement.description.substring(0, maxLength) + '...'
+                    : requirement.description;
+                  return searchQuery ? (
+                    <HighlightedText text={truncated} query={searchQuery} />
+                  ) : (
+                    <span>{truncated}</span>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -165,13 +287,19 @@ export function RequirementCard({ requirement, index }: RequirementCardProps) {
       {/* Expanded Content */}
       {isExpanded && (
         <div className="w-full max-w-full border-t border-border overflow-x-hidden" style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box', overflow: 'hidden' }}>
-          <ScrollArea className="w-full max-w-full max-h-[600px] overflow-y-auto overflow-x-hidden" style={{ width: '100%', maxWidth: '100%' }}>
+          <ScrollArea className={`w-full max-w-full ${!isInExpandedView ? 'max-h-[600px]' : ''} overflow-y-auto overflow-x-hidden`} style={{ width: '100%', maxWidth: '100%' }}>
             <div className="w-full max-w-full p-4 space-y-4 break-words overflow-x-hidden" style={{ width: '100%', maxWidth: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', boxSizing: 'border-box', overflow: 'hidden' }}>
               {/* Description */}
               {requirement.description && (
                 <div className="w-full max-w-full overflow-x-hidden min-w-0" style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box', overflow: 'hidden' }}>
                   <h4 className="text-sm font-semibold text-foreground mb-2">Description</h4>
-                  <p className="w-full max-w-full text-sm text-muted-foreground break-words min-w-0" style={{ width: '100%', maxWidth: '100%', minWidth: 0, wordWrap: 'break-word', overflowWrap: 'break-word', boxSizing: 'border-box', overflow: 'hidden' }}>{requirement.description}</p>
+                  <p className="w-full max-w-full text-sm text-muted-foreground break-words min-w-0" style={{ width: '100%', maxWidth: '100%', minWidth: 0, wordWrap: 'break-word', overflowWrap: 'break-word', boxSizing: 'border-box', overflow: 'hidden' }}>
+                    {searchQuery ? (
+                      <HighlightedText text={requirement.description} query={searchQuery} />
+                    ) : (
+                      requirement.description
+                    )}
+                  </p>
                 </div>
               )}
 

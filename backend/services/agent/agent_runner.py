@@ -19,6 +19,7 @@ from models.usecase.usecase import UsecaseMetadata
 from models.file_processing.ocr_records import OCROutputs, OCRInfo
 from models.file_processing.file_metadata import FileMetadata
 from models.generator.requirement import Requirement
+from models.generator.scenario import Scenario
 from services.llm.gemini_conversational.history_manager import manage_chat_history_for_usecase
 from core.env_config import get_env_variable
 from core.config import AgentLogConfigs
@@ -769,10 +770,38 @@ def tool_show_requirements(usecase_id: UUID) -> Dict[str, Any]:
         # Get current chat history
         chat_history = usecase.chat_history or []
         
+        # Remove any existing requirements markers (keep scenarios and PDF markers)
+        # This ensures only the latest requirements marker exists, but scenarios remain independent
+        requirements_markers_before = [e for e in chat_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "requirements"]
+        scenarios_markers_before = [e for e in chat_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "scenarios"]
+        
+        filtered_history = [
+            entry for entry in chat_history
+            if not (isinstance(entry, dict) and entry.get("modal", {}).get("type") == "requirements")
+        ]
+        
+        requirements_markers_after = [e for e in filtered_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "requirements"]
+        scenarios_markers_after = [e for e in filtered_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "scenarios"]
+        
+        logger.info(_color(
+            f"[SHOW-REQUIREMENTS] Removed old requirements markers. "
+            f"History before: {len(chat_history)} entries, after: {len(filtered_history)} entries | "
+            f"Requirements markers: {len(requirements_markers_before)} -> {len(requirements_markers_after)} (should be 0) | "
+            f"Scenarios markers: {len(scenarios_markers_before)} -> {len(scenarios_markers_after)} (should be preserved)",
+            "35"
+        ))
+        
+        if len(scenarios_markers_before) > 0 and len(scenarios_markers_after) == 0:
+            logger.error(_color(
+                f"[SHOW-REQUIREMENTS-ERROR] Scenarios markers were accidentally removed! "
+                f"Before: {len(scenarios_markers_before)}, After: {len(scenarios_markers_after)}",
+                "31"
+            ))
+        
         # Find the user message we just added (should be first or near the beginning)
         user_message = None
         user_index = -1
-        for i, entry in enumerate(chat_history):
+        for i, entry in enumerate(filtered_history):
             if isinstance(entry, dict) and "user" in entry:
                 user_message = entry
                 user_index = i
@@ -811,25 +840,213 @@ def tool_show_requirements(usecase_id: UUID) -> Dict[str, Any]:
         # Insert marker right after user message (or at beginning if no user message)
         if user_index >= 0:
             updated_history = (
-                chat_history[:user_index + 1] + 
+                filtered_history[:user_index + 1] + 
                 [modal_marker] + 
-                chat_history[user_index + 1:]
+                filtered_history[user_index + 1:]
             )
         else:
-            updated_history = [modal_marker] + chat_history
+            updated_history = [modal_marker] + filtered_history
         
         # Update chat history
         usecase.chat_history = updated_history
         db.commit()
         
+        # Verify the marker was saved
+        db.refresh(usecase)
+        saved_history = usecase.chat_history or []
+        requirement_markers_saved = [e for e in saved_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "requirements"]
+        scenario_markers_saved = [e for e in saved_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "scenarios"]
+        
         logger.info(_color(
-            f"[SHOW-REQUIREMENTS] Created modal marker for usecase_id={usecase_id}",
+            f"[SHOW-REQUIREMENTS] Created modal marker for usecase_id={usecase_id} | "
+            f"Total history entries: {len(saved_history)} | "
+            f"Requirement markers found: {len(requirement_markers_saved)} | "
+            f"Scenario markers found: {len(scenario_markers_saved)} | "
+            f"Marker: {modal_marker}",
             "34"
         ))
+        
+        if len(requirement_markers_saved) == 0:
+            logger.error(_color(
+                f"[SHOW-REQUIREMENTS-ERROR] Modal marker was NOT saved to chat_history! "
+                f"usecase_id={usecase_id}",
+                "31"
+            ))
+        
+        if len(scenario_markers_saved) == 0 and len(scenarios_markers_before) > 0:
+            logger.error(_color(
+                f"[SHOW-REQUIREMENTS-ERROR] Scenarios markers were lost after save! "
+                f"Before filtering: {len(scenarios_markers_before)}, After save: {len(scenario_markers_saved)}",
+                "31"
+            ))
         
         return {
             "status": "success",
             "message": f"Requirements will be displayed above for you to review.",
+            "usecase_id": str(usecase_id)
+        }
+
+
+def tool_show_scenarios(usecase_id: UUID) -> Dict[str, Any]:
+    """Create [modal] placeholder in chat_history for scenarios display.
+    Only call when user asks to see/show scenarios.
+    Similar to tool_show_requirements but for scenarios.
+    """
+    logger.info(_color(f"[SHOW-SCENARIOS] Function called for usecase_id={usecase_id}", "36"))
+    with get_db_context() as db:
+        # Verify usecase exists
+        usecase = db.query(UsecaseMetadata).filter(
+            UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.is_deleted == False,
+        ).first()
+        
+        if not usecase:
+            return {"error": "usecase_not_found"}
+        
+        # Check scenario_generation status (allow "In Progress" or "Completed")
+        scenario_gen_status = usecase.scenario_generation or "Not Started"
+        if scenario_gen_status not in ("In Progress", "Completed"):
+            return {
+                "error": "scenarios_not_ready",
+                "message": f"Scenario generation is '{scenario_gen_status}'. {'Please wait for generation to start.' if scenario_gen_status == 'Not Started' else 'Please wait for generation to complete or retry if failed.'}",
+                "scenario_generation": scenario_gen_status
+            }
+        
+        # Get current chat history
+        chat_history = usecase.chat_history or []
+        
+        # Remove any existing scenarios markers (keep requirements and PDF markers)
+        # This ensures only the latest scenarios marker exists, but requirements remain independent
+        requirements_markers_before = [e for e in chat_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "requirements"]
+        scenarios_markers_before = [e for e in chat_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "scenarios"]
+        
+        filtered_history = [
+            entry for entry in chat_history
+            if not (isinstance(entry, dict) and entry.get("modal", {}).get("type") == "scenarios")
+        ]
+        
+        requirements_markers_after = [e for e in filtered_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "requirements"]
+        scenarios_markers_after = [e for e in filtered_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "scenarios"]
+        
+        logger.info(_color(
+            f"[SHOW-SCENARIOS] Removed old scenarios markers. "
+            f"History before: {len(chat_history)} entries, after: {len(filtered_history)} entries | "
+            f"Requirements markers: {len(requirements_markers_before)} -> {len(requirements_markers_after)} (should be preserved) | "
+            f"Scenarios markers: {len(scenarios_markers_before)} -> {len(scenarios_markers_after)} (should be 0)",
+            "35"
+        ))
+        
+        if len(requirements_markers_before) > 0 and len(requirements_markers_after) == 0:
+            logger.error(_color(
+                f"[SHOW-SCENARIOS-ERROR] Requirements markers were accidentally removed! "
+                f"Before: {len(requirements_markers_before)}, After: {len(requirements_markers_after)}",
+                "31"
+            ))
+        
+        # Find the user message we just added (should be first or near the beginning)
+        user_message = None
+        user_index = -1
+        for i, entry in enumerate(filtered_history):
+            if isinstance(entry, dict) and "user" in entry:
+                user_message = entry
+                user_index = i
+                break
+        
+        if not user_message or user_index < 0:
+            # If no user message found, append to end
+            from datetime import datetime, timezone
+            modal_timestamp = datetime.now(timezone.utc).isoformat()
+        else:
+            # Parse user message timestamp and add 1 second
+            try:
+                from datetime import datetime, timezone
+                user_timestamp_str = user_message.get("timestamp", "")
+                if user_timestamp_str:
+                    user_timestamp = datetime.fromisoformat(user_timestamp_str.replace('Z', '+00:00'))
+                    modal_timestamp = datetime.fromtimestamp(user_timestamp.timestamp() + 1, tz=timezone.utc).isoformat()
+                else:
+                    modal_timestamp = datetime.now(timezone.utc).isoformat()
+            except Exception as e:
+                logger.warning(_color(f"[SHOW-SCENARIOS] Error parsing timestamp: {e}", "33"))
+                from datetime import datetime, timezone
+                modal_timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Create [modal] marker - NO TEXT DATA, only usecase_id reference
+        # Include top-level timestamp for proper sorting in chat history
+        modal_marker = {
+            "modal": {
+                "type": "scenarios",
+                "usecase_id": str(usecase_id),
+                "timestamp": modal_timestamp
+            },
+            "timestamp": modal_timestamp
+        }
+        
+        # Verify requirements markers are still in filtered_history before inserting
+        requirements_in_filtered = [e for e in filtered_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "requirements"]
+        if len(requirements_markers_before) > 0 and len(requirements_in_filtered) == 0:
+            logger.error(_color(
+                f"[SHOW-SCENARIOS-ERROR] Requirements markers missing from filtered_history! "
+                f"Before: {len(requirements_markers_before)}, In filtered: {len(requirements_in_filtered)}",
+                "31"
+            ))
+        
+        # Insert marker right after user message (or at beginning if no user message)
+        if user_index >= 0:
+            updated_history = (
+                filtered_history[:user_index + 1] + 
+                [modal_marker] + 
+                filtered_history[user_index + 1:]
+            )
+        else:
+            updated_history = [modal_marker] + filtered_history
+        
+        # Verify requirements markers are in updated_history before saving
+        requirements_in_updated = [e for e in updated_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "requirements"]
+        if len(requirements_markers_before) > 0 and len(requirements_in_updated) == 0:
+            logger.error(_color(
+                f"[SHOW-SCENARIOS-ERROR] Requirements markers missing from updated_history! "
+                f"Before: {len(requirements_markers_before)}, In updated: {len(requirements_in_updated)}",
+                "31"
+            ))
+        
+        # Update chat history
+        usecase.chat_history = updated_history
+        db.commit()
+        
+        # Verify the marker was saved
+        db.refresh(usecase)
+        saved_history = usecase.chat_history or []
+        scenario_markers = [e for e in saved_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "scenarios"]
+        requirement_markers = [e for e in saved_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "requirements"]
+        
+        logger.info(_color(
+            f"[SHOW-SCENARIOS] Created modal marker for usecase_id={usecase_id} | "
+            f"Total history entries: {len(saved_history)} | "
+            f"Scenario markers found: {len(scenario_markers)} | "
+            f"Requirement markers found: {len(requirement_markers)} | "
+            f"Marker: {modal_marker}",
+            "34"
+        ))
+        
+        if len(scenario_markers) == 0:
+            logger.error(_color(
+                f"[SHOW-SCENARIOS-ERROR] Modal marker was NOT saved to chat_history! "
+                f"usecase_id={usecase_id}",
+                "31"
+            ))
+        
+        if len(requirement_markers) == 0 and len(requirements_markers_before) > 0:
+            logger.error(_color(
+                f"[SHOW-SCENARIOS-ERROR] Requirements markers were lost after save! "
+                f"Before filtering: {len(requirements_markers_before)}, After save: {len(requirement_markers)} | "
+                f"In filtered_history: {len(requirements_in_filtered)}, In updated_history: {len(requirements_in_updated)}",
+                "31"
+            ))
+        
+        return {
+            "status": "success",
+            "message": f"Scenarios will be displayed above for you to review.",
             "usecase_id": str(usecase_id)
         }
 
@@ -1036,6 +1253,116 @@ def tool_read_requirement(usecase_id: UUID, display_id: int) -> Dict[str, Any]:
             }
     except Exception as e:
         logger.error(_color(f"[READ-REQUIREMENT] error: {e}", "31"), exc_info=True)
+        return {"error": "internal_error", "message": str(e)}
+
+
+def tool_read_scenario(usecase_id: UUID, display_id: int) -> Dict[str, Any]:
+    """Read full scenario content from database by display_id. Returns complete, non-truncated text for agent analysis."""
+    try:
+        with get_db_context() as db:
+            # Verify usecase exists
+            usecase = db.query(UsecaseMetadata).filter(
+                UsecaseMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.is_deleted == False,
+            ).first()
+            
+            if not usecase:
+                logger.warning(_color(f"[READ-SCENARIO] usecase not found: {usecase_id}", "31"))
+                return {"error": "usecase_not_found", "message": f"Usecase with id {usecase_id} not found"}
+            
+            # Check scenario_generation status
+            scenario_gen_status = usecase.scenario_generation or "Not Started"
+            if scenario_gen_status not in ("In Progress", "Completed"):
+                return {
+                    "error": "scenarios_not_ready",
+                    "message": f"Scenario generation is '{scenario_gen_status}'. Scenarios are not available yet.",
+                    "scenario_generation": scenario_gen_status
+                }
+            
+            # Find scenario by display_id (via Requirement join to filter by usecase_id)
+            scenario = db.query(Scenario).join(Requirement).filter(
+                Requirement.usecase_id == usecase_id,
+                Scenario.display_id == display_id,
+                Scenario.is_deleted == False,
+                Requirement.is_deleted == False,
+            ).first()
+            
+            if not scenario:
+                logger.warning(_color(f"[READ-SCENARIO] scenario not found: usecase_id={usecase_id} display_id={display_id}", "31"))
+                return {
+                    "error": "scenario_not_found", 
+                    "message": f"Scenario with display_id {display_id} not found for this usecase"
+                }
+            
+            # Get scenario_text JSON
+            scen_text = scenario.scenario_text or {}
+            
+            # Format as readable text (similar to OCR combined_markdown format)
+            formatted_text_parts = []
+            
+            # Add scenario name
+            name = scen_text.get("ScenarioName", "")
+            if name:
+                formatted_text_parts.append(f"## Scenario: {name}\n")
+            
+            # Add description
+            description = scen_text.get("ScenarioDescription", "")
+            if description:
+                formatted_text_parts.append(f"### Description\n{description}\n")
+            
+            # Add scenario ID
+            scenario_id = scen_text.get("ScenarioID", "")
+            if scenario_id:
+                formatted_text_parts.append(f"### Scenario ID\n{scenario_id}\n")
+            
+            # Add flows
+            flows = scen_text.get("Flows", [])
+            if flows:
+                formatted_text_parts.append("### Flows\n")
+                for idx, flow in enumerate(flows, start=1):
+                    formatted_text_parts.append(f"#### Flow {idx}\n")
+                    
+                    flow_type = flow.get("Type", "")
+                    if flow_type:
+                        formatted_text_parts.append(f"**Type**: {flow_type}\n")
+                    
+                    flow_description = flow.get("Description", "")
+                    if flow_description:
+                        formatted_text_parts.append(f"**Description**: {flow_description}\n")
+                    
+                    flow_coverage = flow.get("Coverage", "")
+                    if flow_coverage:
+                        formatted_text_parts.append(f"**Coverage**: {flow_coverage}\n")
+                    
+                    flow_expected_results = flow.get("ExpectedResults", "")
+                    if flow_expected_results:
+                        formatted_text_parts.append(f"**Expected Results**: {flow_expected_results}\n")
+                    
+                    formatted_text_parts.append("\n")
+            
+            # Combine all parts
+            formatted_text = "\n".join(formatted_text_parts)
+            
+            total_chars = len(formatted_text)
+            logger.info(_color(
+                f"[READ-SCENARIO] usecase_id={usecase_id} display_id={display_id} "
+                f"scenario_id={scenario.id} total_chars={total_chars}",
+                "34"
+            ))
+            
+            # Return FULL text - no truncation for agent
+            return {
+                "usecase_id": str(usecase_id),
+                "display_id": display_id,
+                "scenario_id": str(scenario.id),
+                "scenario_name": name,
+                "scenario_text": formatted_text,
+                "scenario_json": scen_text,  # Also include raw JSON for reference
+                "total_chars": total_chars,
+                "message": f"Retrieved scenario TS-{display_id}: {name} ({total_chars} characters)."
+            }
+    except Exception as e:
+        logger.error(_color(f"[READ-SCENARIO] error: {e}", "31"), exc_info=True)
         return {"error": "internal_error", "message": str(e)}
 
 
@@ -1471,6 +1798,46 @@ def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
             raise
 
     @lc_tool
+    async def read_scenario(display_id: int) -> Dict[str, Any]:
+        """
+        Read full scenario content from database by display_id for agent analysis.
+        Call when user asks questions about a specific scenario and you need to read its content to answer.
+        Use when user asks: "what does scenario X say?", "tell me about TS-1", "what are the details of scenario 2?"
+        Conditions: scenario_generation must be "In Progress" OR "Completed", display_id must be valid.
+        Returns full, non-truncated scenario text for your analysis.
+        Use this text to answer user's question, but do NOT include the full text in your response.
+        """
+        name = "read_scenario"
+        entry = tracer.start_tool(name, args_preview=f'{{"display_id": {display_id}}}')
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] display_id={display_id} usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_read_scenario, usecase_id, display_id)
+            total_chars = result.get("total_chars", 0)
+            scen_name = result.get("scenario_name", "N/A")
+            duration_ms = int((time.time() - start) * 1000)
+            # Log truncated version for performance, but return full to agent
+            tracer.finish_tool(entry, True, result_preview=f"display_id={display_id} name={scen_name} chars={total_chars}", duration_ms=duration_ms, chars_read=total_chars)
+            try:
+                import json as _json
+                # Log truncated version
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED IN LOG]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+                logger.info(_color(f"[TOOL-OUTPUT {name}] NOTE: Logs truncated for performance, but agent receives FULL text ({total_chars} chars)", "33"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms chars={total_chars}", "34"))
+            # Return FULL result - no truncation for agent
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
+    @lc_tool
     async def show_requirements() -> Dict[str, Any]:
         """
         Create [modal] placeholder in chat_history to display requirements to user.
@@ -1506,6 +1873,42 @@ def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
             logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
             raise
 
+    @lc_tool
+    async def show_scenarios() -> Dict[str, Any]:
+        """
+        Create [modal] placeholder in chat_history to display scenarios to user.
+        **MANDATORY**: You MUST call this tool when user explicitly requests to see/view/display scenarios.
+        User phrases: "show scenarios", "display scenarios", "show me the scenarios", "view scenarios", "show the scenarios", "can i see the scenarios", "can you show the scenarios", "if scenarios are done, can i see them", etc.
+        Conditions:
+        1. scenario_generation status is "In Progress" OR "Completed"
+        2. User explicitly asks to see scenarios
+        After calling, respond: "I've retrieved the scenarios. They will be displayed above for you to review."
+        This tool creates a [modal] placeholder in chat_history (no text data stored).
+        """
+        name = "show_scenarios"
+        entry = tracer.start_tool(name, args_preview="{}")
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_show_scenarios, usecase_id)
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, True, result_preview=f"usecase_id={usecase_id} status={result.get('status', 'unknown')}", duration_ms=duration_ms)
+            try:
+                import json as _json
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
     return [
         get_usecase_status,
         get_documents_markdown,
@@ -1516,7 +1919,9 @@ def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
         show_extracted_text,
         read_extracted_text,
         read_requirement,
+        read_scenario,
         show_requirements,
+        show_scenarios,
     ]
 
 
@@ -1985,20 +2390,117 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
                 
                 if requirement_generation in ("In Progress", "Completed"):
                     logger.info(_color(f"[SHOW-REQ-FALLBACK] Conditions met - calling show_requirements tool as fallback", "35"))
+                    tool_name = "show_requirements"
+                    tool_entry = None
+                    tool_start_time = None
                     try:
+                        # Track tool call in tracer
+                        tool_entry = tracer.start_tool(tool_name, args_preview=f'{{"usecase_id": "{usecase_id}"}}')
+                        tool_start_time = time.time()
+                        logger.info(_color(f"[TOOL-START {tool_name}] usecase_id={usecase_id}", "34"))
+                        
                         result = tool_show_requirements(usecase_id)
+                        duration_ms = int((time.time() - tool_start_time) * 1000)
+                        
                         if result.get("status") == "success":
+                            tracer.finish_tool(tool_entry, True, result_preview=f"status=success usecase_id={usecase_id}", duration_ms=duration_ms)
+                            logger.info(_color(f"[TOOL-END {tool_name}] duration={duration_ms}ms", "34"))
                             logger.info(_color(f"[SHOW-REQ-FALLBACK] Successfully called show_requirements tool", "35"))
                             # Update assistant_text to indicate requirements were retrieved
                             assistant_text = "I've retrieved the requirements. They will be displayed above for you to review."
                         else:
-                            logger.warning(_color(f"[SHOW-REQ-FALLBACK] show_requirements returned error: {result.get('error')}", "33"))
+                            error_msg = result.get('error', 'unknown_error')
+                            tracer.finish_tool(tool_entry, False, error=error_msg, duration_ms=duration_ms)
+                            logger.warning(_color(f"[TOOL-ERROR {tool_name}] {error_msg}", "34"))
+                            logger.warning(_color(f"[SHOW-REQ-FALLBACK] show_requirements returned error: {error_msg}", "33"))
                     except Exception as e:
+                        duration_ms = int((time.time() - tool_start_time) * 1000) if tool_start_time else 0
+                        if tool_entry:
+                            tracer.finish_tool(tool_entry, False, error=str(e), duration_ms=duration_ms)
+                        logger.warning(_color(f"[TOOL-ERROR {tool_name}] {e}", "34"))
                         logger.warning(_color(f"[SHOW-REQ-FALLBACK] Error calling show_requirements: {e}", "33"), exc_info=True)
                 else:
                     logger.info(_color(f"[SHOW-REQ-FALLBACK] Conditions not met: requirement_generation={requirement_generation}", "35"))
             except Exception as e:
                 logger.warning(_color(f"[SHOW-REQ-FALLBACK] Fallback check failed: {e}", "33"), exc_info=True)
+        
+        # Post-run: Check if user wants to see scenarios but tool wasn't called
+        user_text_lower_show_scen = user_message.lower()
+        show_scenarios_keywords = [
+            "show scenarios", "display scenarios", "show me the scenarios",
+            "view scenarios", "show the scenarios", "can i see the scenarios",
+            "can you show the scenarios", "can you show them",
+            "if scenarios are done, can i see them", "if scenarios are done, can you show them",
+            "i want to see the scenarios", "i want to see them",
+            "show them", "show it", "let me see the scenarios"
+        ]
+        wants_show_scenarios = any(kw in user_text_lower_show_scen for kw in show_scenarios_keywords) or \
+                               ("scenarios" in user_text_lower_show_scen and ("show" in user_text_lower_show_scen or "see" in user_text_lower_show_scen or "view" in user_text_lower_show_scen or "display" in user_text_lower_show_scen))
+        
+        try:
+            show_scen_tool_called = any(
+                (tc.get("name") == "show_scenarios") for tc in tracer.data.get("tool_calls", [])
+            )
+            logger.info(_color(f"[SHOW-SCEN-CHECK] Tool call detection: show_scen_tool_called={show_scen_tool_called}, wants_show_scenarios={wants_show_scenarios}, tool_calls_count={len(tracer.data.get('tool_calls', []))}", "35"))
+        except Exception as e:
+            show_scen_tool_called = False
+            logger.warning(_color(f"[SHOW-SCEN-CHECK] Error checking tool calls: {e}", "33"))
+        
+        # Fallback: If user asked to see scenarios but tool wasn't called, check if we should call it
+        # Also check if agent's response suggests it tried to show scenarios
+        agent_response_suggests_show_scen = "retrieved the scenarios" in assistant_text.lower() or "scenarios" in assistant_text.lower() and ("display" in assistant_text.lower() or "shown" in assistant_text.lower() or "above" in assistant_text.lower())
+        
+        if not show_scen_tool_called and (wants_show_scenarios or agent_response_suggests_show_scen):
+            logger.info(_color(f"[SHOW-SCEN-FALLBACK] Tool was not called but user requested to see scenarios (user_message='{user_message[:100]}', agent_response_suggests={agent_response_suggests_show_scen}) - checking status", "35"))
+            try:
+                status = tool_get_usecase_status(usecase_id)
+                scenario_generation = status.get("scenario_generation") or "Not Started"
+                
+                logger.info(_color(f"[SHOW-SCEN-FALLBACK] Status check: scenario_generation={scenario_generation}", "35"))
+                
+                if scenario_generation in ("In Progress", "Completed"):
+                    logger.info(_color(f"[SHOW-SCEN-FALLBACK] Conditions met - calling show_scenarios tool as fallback", "35"))
+                    tool_name = "show_scenarios"
+                    tool_entry = None
+                    tool_start_time = None
+                    try:
+                        # Track tool call in tracer
+                        tool_entry = tracer.start_tool(tool_name, args_preview=f'{{"usecase_id": "{usecase_id}"}}')
+                        tool_start_time = time.time()
+                        logger.info(_color(f"[TOOL-START {tool_name}] usecase_id={usecase_id}", "34"))
+                        
+                        result = tool_show_scenarios(usecase_id)
+                        duration_ms = int((time.time() - tool_start_time) * 1000)
+                        
+                        if result.get("status") == "success":
+                            tracer.finish_tool(tool_entry, True, result_preview=f"status=success usecase_id={usecase_id}", duration_ms=duration_ms)
+                            logger.info(_color(f"[TOOL-END {tool_name}] duration={duration_ms}ms", "34"))
+                            logger.info(_color(f"[SHOW-SCEN-FALLBACK] Successfully called show_scenarios tool", "35"))
+                            # Update assistant_text to indicate scenarios were retrieved
+                            assistant_text = "I've retrieved the scenarios. They will be displayed above for you to review."
+                        else:
+                            error_msg = result.get('error', 'unknown_error')
+                            tracer.finish_tool(tool_entry, False, error=error_msg, duration_ms=duration_ms)
+                            logger.warning(_color(f"[TOOL-ERROR {tool_name}] {error_msg}", "34"))
+                            logger.warning(_color(f"[SHOW-SCEN-FALLBACK] show_scenarios returned error: {error_msg}", "33"))
+                    except Exception as e:
+                        duration_ms = int((time.time() - tool_start_time) * 1000) if tool_start_time else 0
+                        if tool_entry:
+                            tracer.finish_tool(tool_entry, False, error=str(e), duration_ms=duration_ms)
+                        logger.warning(_color(f"[TOOL-ERROR {tool_name}] {e}", "34"))
+                        logger.warning(_color(f"[SHOW-SCEN-FALLBACK] Error calling show_scenarios: {e}", "33"), exc_info=True)
+                else:
+                    logger.info(_color(f"[SHOW-SCEN-FALLBACK] Conditions not met: scenario_generation={scenario_generation}", "35"))
+            except Exception as e:
+                logger.warning(_color(f"[SHOW-SCEN-FALLBACK] Fallback check failed: {e}", "33"), exc_info=True)
+        
+        # Final debug: Log all tool calls before returning (should include fallback tools)
+        try:
+            final_tool_calls = tracer.data.get("tool_calls", [])
+            final_tool_names = [tc.get("name") for tc in final_tool_calls]
+            logger.info(_color(f"[DEBUG-FINAL] All tool calls before return: {final_tool_names} (count={len(final_tool_calls)})", "36"))
+        except Exception:
+            pass
         
         return assistant_text, tracer.dump()
     except Exception as e:

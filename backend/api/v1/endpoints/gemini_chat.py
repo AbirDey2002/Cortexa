@@ -217,6 +217,14 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                 # Delegate to deep agent for orchestration
                 assistant_text, traces = run_agent_turn(usecase_id, user_message, model=selected_model)
                 gemini_streaming_responses[str(usecase_id)] = assistant_text
+                
+                # Debug: Log traces structure
+                try:
+                    tool_calls_count = len(traces.get("tool_calls", [])) if isinstance(traces, dict) else 0
+                    tool_names = [tc.get("name", "unknown") for tc in traces.get("tool_calls", [])] if isinstance(traces, dict) else []
+                    logger.info(f"[TRACES-DEBUG] Traces received: tool_calls_count={tool_calls_count}, tool_names={tool_names}")
+                except Exception as e:
+                    logger.warning(f"[TRACES-DEBUG] Error logging traces: {e}")
 
                 # First pass logging
                 try:
@@ -246,46 +254,77 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                 db.refresh(record)
                 current_db_history = record.chat_history or []
                 
-                # Find [modal] markers that were created during this turn (after user message, before agent response)
-                modal_markers = []
+                # Collect ALL modal markers from current_db_history (both new and existing)
+                # This ensures requirements and scenarios markers persist independently
+                all_modal_markers = []
                 user_timestamp = None
                 for entry in current_db_history:
                     if isinstance(entry, dict) and "user" in entry:
                         user_timestamp = entry.get("timestamp")
                         break
                 
-                # Collect modal markers that should be preserved (created after user message)
+                # Collect ALL modal markers (requirements, scenarios, PDF) - preserve all types independently
                 for entry in current_db_history:
                     if isinstance(entry, dict) and "modal" in entry:
-                        modal_timestamp = entry.get("timestamp") or entry.get("modal", {}).get("timestamp", "")
-                        if modal_timestamp and user_timestamp:
-                            try:
-                                from datetime import datetime, timezone
-                                modal_time = datetime.fromisoformat(modal_timestamp.replace('Z', '+00:00'))
-                                user_time = datetime.fromisoformat(user_timestamp.replace('Z', '+00:00'))
-                                # Modal marker should be after user message (within reasonable time window of 30 seconds)
-                                if modal_time >= user_time and (modal_time - user_time).total_seconds() < 30:
-                                    modal_markers.append(entry)
-                            except:
-                                # If timestamp parsing fails, include the marker anyway if it's recent
-                                modal_markers.append(entry)
-                        else:
-                            # Include if no timestamps available (shouldn't happen, but be safe)
-                            modal_markers.append(entry)
+                        modal = entry.get("modal", {})
+                        modal_type = modal.get("type")  # "requirements", "scenarios", or None (for PDF)
+                        modal_file_id = modal.get("file_id")  # For PDF markers
+                        
+                        # For requirements and scenarios, always preserve the latest marker of each type
+                        # For PDF markers, check if created during this turn
+                        if modal_type in ("requirements", "scenarios"):
+                            # Always include requirements/scenarios markers (they're managed independently by tools)
+                            all_modal_markers.append(entry)
+                        elif modal_file_id:
+                            # For PDF markers, check if created during this turn
+                            modal_timestamp = entry.get("timestamp") or modal.get("timestamp", "")
+                            if modal_timestamp and user_timestamp:
+                                try:
+                                    from datetime import datetime, timezone
+                                    modal_time = datetime.fromisoformat(modal_timestamp.replace('Z', '+00:00'))
+                                    user_time = datetime.fromisoformat(user_timestamp.replace('Z', '+00:00'))
+                                    # PDF marker should be after user message (within reasonable time window of 30 seconds)
+                                    if modal_time >= user_time and (modal_time - user_time).total_seconds() < 30:
+                                        all_modal_markers.append(entry)
+                                except:
+                                    # If timestamp parsing fails, include the marker anyway if it's recent
+                                    all_modal_markers.append(entry)
+                            else:
+                                # Include if no timestamps available (shouldn't happen, but be safe)
+                                all_modal_markers.append(entry)
                 
                 # Build final history: agent response first, then modal markers, then rest
                 # History is stored newest-first: [agent, modal, user, ...]
                 final_history = [system_entry]
-                final_history.extend(modal_markers)
+                final_history.extend(all_modal_markers)
                 
                 # Add the rest of updated_history (from history manager), excluding duplicates
                 # updated_history already has the user message and older entries
-                seen_modal_file_ids = {m.get("modal", {}).get("file_id") for m in modal_markers if isinstance(m, dict) and "modal" in m}
+                # Track all modal markers we've already added to avoid duplicates
+                seen_modal_keys = set()
+                for m in all_modal_markers:
+                    if isinstance(m, dict) and "modal" in m:
+                        modal = m.get("modal", {})
+                        # For requirements/scenarios, track by type
+                        if modal.get("type") in ("requirements", "scenarios"):
+                            seen_modal_keys.add(f"type:{modal.get('type')}")
+                        # For PDF, track by file_id
+                        elif modal.get("file_id"):
+                            seen_modal_keys.add(f"file_id:{modal.get('file_id')}")
+                
                 for entry in updated_history or []:
                     # Skip if it's a modal marker we already added
                     if isinstance(entry, dict) and "modal" in entry:
-                        if entry.get("modal", {}).get("file_id") in seen_modal_file_ids:
-                            continue
+                        modal = entry.get("modal", {})
+                        modal_type = modal.get("type")
+                        modal_file_id = modal.get("file_id")
+                        
+                        if modal_type in ("requirements", "scenarios"):
+                            if f"type:{modal_type}" in seen_modal_keys:
+                                continue
+                        elif modal_file_id:
+                            if f"file_id:{modal_file_id}" in seen_modal_keys:
+                                continue
                     final_history.append(entry)
                 
                 record.chat_history = final_history

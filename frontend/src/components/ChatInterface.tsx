@@ -15,6 +15,7 @@ import { RequirementsGenerationConfirmModal } from "@/components/chat/Requiremen
 import { ScenariosGenerationConfirmModal } from "@/components/chat/ScenariosGenerationConfirmModal";
 import { PdfContentMessage } from "@/components/chat/PdfContentMessage";
 import { RequirementsMessage } from "@/components/chat/RequirementsMessage";
+import { ScenariosMessage } from "@/components/chat/ScenariosMessage";
 
 function extractMainTextFromStored(raw: any): string {
   try {
@@ -137,6 +138,21 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
     }>;
     timestamp: Date;
   }>>([]);
+  const [scenariosMessages, setScenariosMessages] = useState<Array<{
+    scenarios: Array<{
+      id: string;
+      display_id: number;
+      scenario_name: string;
+      scenario_description: string;
+      scenario_id?: string;
+      requirement_id: string;
+      requirement_display_id: number;
+      flows?: any[];
+      created_at?: string;
+    }>;
+    timestamp: Date;
+  }>>([]);
+  const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
   // Removed files tray and processing modal state
   const [status, setStatus] = useState<string>("Completed");
   const [waitingForResponse, setWaitingForResponse] = useState(false);
@@ -148,7 +164,13 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
   // Scroll to bottom when messages change
   const scrollToBottom = () => {
     if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+    } else if (scrollAreaRef.current) {
+      // Fallback: scroll the ScrollArea container to bottom
+      const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
     }
   };
 
@@ -160,10 +182,12 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
         setMessages([]);
         setPdfContentMessages([]);
         setRequirementsMessages([]);
+        setScenariosMessages([]);
         setReqGenStatus("");
         setLastReqGenCheckedUsecaseId(null);
         setScenarioGenStatus("");
         setLastScenarioGenCheckedUsecaseId(null);
+        setExpandedMessageId(null); // Reset expanded view when usecase changes
         // Cleanup polling timers
         if (reqGenPollTimerRef.current) {
           window.clearInterval(reqGenPollTimerRef.current);
@@ -349,9 +373,18 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
         
         // Check for [modal] markers in chat history and fetch content
         const modalMarkers = sortedHistory.filter((entry: any) => entry && entry.modal);
+        console.log(`[MODAL-MARKERS] Found ${modalMarkers.length} modal markers in chat history:`, modalMarkers.map((m: any) => ({ type: m.modal?.type, usecase_id: m.modal?.usecase_id })));
+        
+        // Track which types we found markers for BEFORE processing
+        const foundPdfMarkers = modalMarkers.some((m: any) => m.modal?.file_id);
+        const foundRequirementsMarkers = modalMarkers.some((m: any) => m.modal?.type === "requirements");
+        const foundScenariosMarkers = modalMarkers.some((m: any) => m.modal?.type === "scenarios");
+        
+        console.log(`[MODAL-MARKERS] Marker types found: PDFs=${foundPdfMarkers}, Requirements=${foundRequirementsMarkers}, Scenarios=${foundScenariosMarkers}`);
+        
         if (modalMarkers.length > 0) {
-          // Fetch PDF content and requirements for all markers
-          (async () => {
+          // Fetch PDF content and requirements for all markers - await completion before scrolling
+          await (async () => {
             const pdfContents: Array<{
               fileId: string;
               fileName: string;
@@ -365,6 +398,21 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 name: string;
                 description: string;
                 requirement_entities?: any;
+                created_at?: string;
+              }>;
+              timestamp: Date;
+            }> = [];
+            
+            const scenariosContents: Array<{
+              scenarios: Array<{
+                id: string;
+                display_id: number;
+                scenario_name: string;
+                scenario_description: string;
+                scenario_id?: string;
+                requirement_id: string;
+                requirement_display_id: number;
+                flows?: any[];
                 created_at?: string;
               }>;
               timestamp: Date;
@@ -390,38 +438,91 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               } else if (modal && modal.type === "requirements" && modal.usecase_id) {
                 // Requirements modal
                 try {
+                  console.log(`[REQUIREMENTS-LOAD] Loading requirements for usecase ${modal.usecase_id}`);
                   const requirementsData = await apiGet<any>(`/requirements/${modal.usecase_id}/list`);
+                  console.log(`[REQUIREMENTS-LOAD] API response:`, requirementsData);
                   if (requirementsData && requirementsData.requirements && requirementsData.requirements.length > 0) {
                     requirementsContents.push({
                       requirements: requirementsData.requirements,
                       timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
                     });
+                    console.log(`[REQUIREMENTS-LOAD] Added ${requirementsData.requirements.length} requirements to requirementsContents`);
+                  } else {
+                    console.warn(`[REQUIREMENTS-LOAD] No requirements found for usecase ${modal.usecase_id}`);
                   }
                 } catch (error) {
                   console.error("Error retrieving requirements from [modal] marker:", error);
                 }
+              } else if (modal && modal.type === "scenarios" && modal.usecase_id) {
+                // Scenarios modal
+                try {
+                  const scenariosData = await apiGet<any>(`/scenarios/${modal.usecase_id}/list-flat`);
+                  console.log(`[SCENARIOS-LOAD] Loaded scenarios for usecase ${modal.usecase_id}:`, scenariosData);
+                  if (scenariosData && scenariosData.scenarios && scenariosData.scenarios.length > 0) {
+                    scenariosContents.push({
+                      scenarios: scenariosData.scenarios,
+                      timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
+                    });
+                    console.log(`[SCENARIOS-LOAD] Added ${scenariosData.scenarios.length} scenarios to scenariosContents`);
+                  } else {
+                    console.warn(`[SCENARIOS-LOAD] No scenarios found for usecase ${modal.usecase_id}`);
+                  }
+                } catch (error) {
+                  console.error("Error retrieving scenarios from [modal] marker:", error);
+                }
               }
             }
             
-            if (pdfContents.length > 0) {
+            // Always update state for types we found markers for
+            // When loading from chat history, we should load ALL markers found, not preserve existing state
+            // (existing state was already cleared when usecase changed)
+            // IMPORTANT: Set state for ALL found types, even if arrays are empty (API might return empty)
+            // This ensures we don't accidentally preserve stale state
+            if (foundPdfMarkers) {
               setPdfContentMessages(pdfContents);
+              console.log(`[MODAL-LOAD] Set PDF messages: ${pdfContents.length} items`);
             } else {
+              // No PDF markers found - ensure state is cleared
               setPdfContentMessages([]);
             }
-            
-            if (requirementsContents.length > 0) {
+            if (foundRequirementsMarkers) {
               setRequirementsMessages(requirementsContents);
+              console.log(`[MODAL-LOAD] Set Requirements messages: ${requirementsContents.length} items (found ${requirementsContents.length} entries)`);
             } else {
+              // No requirements markers found - ensure state is cleared
               setRequirementsMessages([]);
+              console.log(`[MODAL-LOAD] No requirements markers found, cleared requirements state`);
             }
+            if (foundScenariosMarkers) {
+              setScenariosMessages(scenariosContents);
+              console.log(`[MODAL-LOAD] Set Scenarios messages: ${scenariosContents.length} items (found ${scenariosContents.length} entries)`);
+            } else {
+              // No scenarios markers found - ensure state is cleared
+              setScenariosMessages([]);
+              console.log(`[MODAL-LOAD] No scenarios markers found, cleared scenarios state`);
+            }
+            
+            console.log(`[MODAL-LOAD] Final state after setting: PDFs=${pdfContents.length}, Requirements=${requirementsContents.length}, Scenarios=${scenariosContents.length}`);
           })();
         } else {
+          // No modal markers found - clear all (this is correct when switching to a usecase with no modals)
+          console.log(`[MODAL-LOAD] No modal markers found, clearing all modal states`);
           setPdfContentMessages([]);
           setRequirementsMessages([]);
+          setScenariosMessages([]);
         }
         
-        // Schedule scroll to bottom after messages are rendered
-        setTimeout(scrollToBottom, 100);
+        // Wait for DOM to update after all state changes, then scroll to bottom
+        // Use requestAnimationFrame to ensure DOM is fully rendered
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              scrollToBottom();
+              // Also try scrolling again after a short delay to catch any late-rendering content
+              setTimeout(scrollToBottom, 200);
+            }, 100);
+          });
+        });
       } catch (e) {
         console.error("Error loading chat history:", e);
         setMessages([]);
@@ -508,7 +609,31 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 timestamp: Date;
               }> = [];
               
-              for (const markerEntry of modalMarkers) {
+              const scenariosContents: Array<{
+                scenarios: Array<{
+                  id: string;
+                  display_id: number;
+                  scenario_name: string;
+                  scenario_description: string;
+                  scenario_id?: string;
+                  requirement_id: string;
+                  requirement_display_id: number;
+                  flows?: any[];
+                  created_at?: string;
+                }>;
+                timestamp: Date;
+              }> = [];
+              
+            // Track which types we found markers for BEFORE processing
+            const foundPdfMarkers = modalMarkers.some((m: any) => m.modal?.file_id);
+            const foundRequirementsMarkers = modalMarkers.some((m: any) => m.modal?.type === "requirements");
+            const foundScenariosMarkers = modalMarkers.some((m: any) => m.modal?.type === "scenarios");
+            
+            console.log(`[MODAL-LOAD] Before processing - Marker types found: PDFs=${foundPdfMarkers}, Requirements=${foundRequirementsMarkers}, Scenarios=${foundScenariosMarkers}`);
+            console.log(`[MODAL-LOAD] Processing ${modalMarkers.length} markers...`);
+            
+            for (const markerEntry of modalMarkers) {
+              console.log(`[MODAL-LOAD] Processing marker:`, { type: markerEntry.modal?.type, file_id: markerEntry.modal?.file_id, usecase_id: markerEntry.modal?.usecase_id });
                 const modal = markerEntry.modal;
                 if (modal && modal.file_id) {
                   // PDF modal
@@ -538,16 +663,43 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                   } catch (error) {
                     console.error("Error retrieving requirements from [modal] marker during polling:", error);
                   }
+                } else if (modal && modal.type === "scenarios" && modal.usecase_id) {
+                  // Scenarios modal
+                  try {
+                    const scenariosData = await apiGet<any>(`/scenarios/${modal.usecase_id}/list-flat`);
+                    console.log(`[SCENARIOS-POLL] Loaded scenarios for usecase ${modal.usecase_id}:`, scenariosData);
+                    if (scenariosData && scenariosData.scenarios && scenariosData.scenarios.length > 0) {
+                      scenariosContents.push({
+                        scenarios: scenariosData.scenarios,
+                        timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
+                      });
+                      console.log(`[SCENARIOS-POLL] Added ${scenariosData.scenarios.length} scenarios to scenariosContents`);
+                    } else {
+                      console.warn(`[SCENARIOS-POLL] No scenarios found for usecase ${modal.usecase_id}`);
+                    }
+                  } catch (error) {
+                    console.error("Error retrieving scenarios from [modal] marker during polling:", error);
+                  }
                 }
               }
               
-              if (pdfContents.length > 0) {
+              // During polling, only update state for types we found markers for
+              // This preserves existing state for types we didn't find markers for during polling
+              // (polling is incremental, not a full reload)
+              if (foundPdfMarkers) {
                 setPdfContentMessages(pdfContents);
+                console.log(`[MODAL-POLL] Set PDF messages: ${pdfContents.length} items`);
+              }
+              if (foundRequirementsMarkers) {
+                setRequirementsMessages(requirementsContents);
+                console.log(`[MODAL-POLL] Set Requirements messages: ${requirementsContents.length} items`);
+              }
+              if (foundScenariosMarkers) {
+                setScenariosMessages(scenariosContents);
+                console.log(`[MODAL-POLL] Set Scenarios messages: ${scenariosContents.length} items`);
               }
               
-              if (requirementsContents.length > 0) {
-                setRequirementsMessages(requirementsContents);
-              }
+              console.log(`[MODAL-POLL] Final state: PDFs=${pdfContents.length}, Requirements=${requirementsContents.length}, Scenarios=${scenariosContents.length}`);
             }
             
             const mappedMessages = sortedHistory.map((entry, idx) => {
@@ -914,6 +1066,134 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               </div>
             </div>
           </div>
+        ) : expandedMessageId ? (
+          // Expanded view - render the expanded component
+          (() => {
+            // Rebuild the same data structures as in the normal view
+            const groupedPdfs: Array<Array<{
+              fileId: string;
+              fileName: string;
+              pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+              timestamp: Date;
+            }>> = [];
+            
+            const sortedPdfs = [...pdfContentMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            const sortedRequirements = [...requirementsMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            const sortedScenarios = [...scenariosMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            
+            sortedPdfs.forEach((pdf) => {
+              let addedToGroup = false;
+              for (const group of groupedPdfs) {
+                const groupTimestamps = group.map(p => p.timestamp.getTime());
+                const minTime = Math.min(...groupTimestamps);
+                const maxTime = Math.max(...groupTimestamps);
+                const pdfTime = pdf.timestamp.getTime();
+                
+                if (Math.abs(pdfTime - minTime) <= 5000 || Math.abs(pdfTime - maxTime) <= 5000) {
+                  group.push(pdf);
+                  addedToGroup = true;
+                  break;
+                }
+              }
+              
+              if (!addedToGroup) {
+                groupedPdfs.push([pdf]);
+              }
+            });
+
+            // Find which message is expanded
+            const allItems: Array<{
+              type: 'message' | 'pdf-group' | 'requirements' | 'scenarios';
+              timestamp: Date;
+              data: any;
+            }> = [
+              ...messages.map(m => ({ type: 'message' as const, timestamp: m.timestamp, data: m })),
+              ...groupedPdfs.map(group => ({
+                type: 'pdf-group' as const,
+                timestamp: group[0].timestamp,
+                data: group.map(p => ({
+                  fileId: p.fileId,
+                  fileName: p.fileName,
+                  pages: p.pages
+                }))
+              })),
+              ...sortedRequirements.map(req => ({
+                type: 'requirements' as const,
+                timestamp: req.timestamp,
+                data: req.requirements
+              })),
+              ...sortedScenarios.map(scen => ({
+                type: 'scenarios' as const,
+                timestamp: scen.timestamp,
+                data: scen.scenarios
+              }))
+            ].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+            // Find the expanded item
+            let expandedItem: typeof allItems[0] | null = null;
+            let expandedIdx = -1;
+            allItems.forEach((item, idx) => {
+              let messageId = '';
+              if (item.type === 'pdf-group') {
+                const pdfFiles = item.data as Array<{ fileId: string }>;
+                messageId = `pdf-group-${idx}-${pdfFiles.map(f => f.fileId).join('-')}`;
+              } else if (item.type === 'requirements') {
+                const requirements = item.data as Array<{ id: string }>;
+                messageId = `requirements-${idx}-${requirements.map(r => r.id).join('-')}`;
+              } else if (item.type === 'scenarios') {
+                const scenarios = item.data as Array<{ id: string }>;
+                messageId = `scenarios-${idx}-${scenarios.map(s => s.id).join('-')}`;
+              }
+              if (messageId === expandedMessageId) {
+                expandedItem = item;
+                expandedIdx = idx;
+              }
+            });
+
+            if (expandedItem) {
+              if (expandedItem.type === 'pdf-group') {
+                const pdfFiles = expandedItem.data as Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }>;
+                return (
+                  <PdfContentMessage
+                    key={expandedMessageId}
+                    files={pdfFiles}
+                    messageId={expandedMessageId}
+                    onExpand={setExpandedMessageId}
+                    isExpanded={true}
+                    onMinimize={() => setExpandedMessageId(null)}
+                  />
+                );
+              } else if (expandedItem.type === 'requirements') {
+                const requirements = expandedItem.data as Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }>;
+                return (
+                  <RequirementsMessage
+                    key={expandedMessageId}
+                    requirements={requirements}
+                    usecaseId={usecaseId || ""}
+                    messageId={expandedMessageId}
+                    onExpand={setExpandedMessageId}
+                    isExpanded={true}
+                    onMinimize={() => setExpandedMessageId(null)}
+                  />
+                );
+              } else if (expandedItem.type === 'scenarios') {
+                const scenarios = expandedItem.data as Array<{ id: string; display_id: number; scenario_name: string; scenario_description: string; scenario_id?: string; requirement_id: string; requirement_display_id: number; flows?: any[]; created_at?: string }>;
+                console.log('[SCENARIOS-EXPAND] ChatInterface rendering expanded scenarios view:', { expandedMessageId, scenariosCount: scenarios.length });
+                return (
+                  <ScenariosMessage
+                    key={expandedMessageId}
+                    scenarios={scenarios}
+                    usecaseId={usecaseId || ""}
+                    messageId={expandedMessageId}
+                    onExpand={setExpandedMessageId}
+                    isExpanded={true}
+                    onMinimize={() => setExpandedMessageId(null)}
+                  />
+                );
+              }
+            }
+            return null;
+          })()
         ) : (
           // Chat Messages
           <ScrollArea ref={scrollAreaRef} className="flex-1 pb-24 overflow-y-auto">
@@ -938,6 +1218,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 
                 const sortedPdfs = [...pdfContentMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 const sortedRequirements = [...requirementsMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+                const sortedScenarios = [...scenariosMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 
                 sortedPdfs.forEach((pdf) => {
                   // Find a group where this PDF's timestamp is within 5 seconds of any PDF in the group
@@ -962,11 +1243,11 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                   }
                 });
                 
-                // Create items for rendering: messages, grouped PDFs, and requirements
+                // Create items for rendering: messages, grouped PDFs, requirements, and scenarios
                 const allItems: Array<{
-                  type: 'message' | 'pdf-group' | 'requirements';
+                  type: 'message' | 'pdf-group' | 'requirements' | 'scenarios';
                   timestamp: Date;
-                  data: Message | Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }> | Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }>;
+                  data: Message | Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }> | Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }> | Array<{ id: string; display_id: number; scenario_name: string; scenario_description: string; scenario_id?: string; requirement_id: string; requirement_display_id: number; flows?: any[]; created_at?: string }>;
                 }> = [
                   ...messages.map(m => ({ type: 'message' as const, timestamp: m.timestamp, data: m })),
                   ...groupedPdfs.map(group => ({
@@ -982,25 +1263,56 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     type: 'requirements' as const,
                     timestamp: req.timestamp,
                     data: req.requirements
+                  })),
+                  ...sortedScenarios.map(scen => ({
+                    type: 'scenarios' as const,
+                    timestamp: scen.timestamp,
+                    data: scen.scenarios
                   }))
                 ].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 
                 return allItems.map((item, idx) => {
                   if (item.type === 'pdf-group') {
                     const pdfFiles = item.data as Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }>;
+                    const messageId = `pdf-group-${idx}-${pdfFiles.map(f => f.fileId).join('-')}`;
                     return (
                       <PdfContentMessage
-                        key={`pdf-group-${idx}-${pdfFiles.map(f => f.fileId).join('-')}`}
+                        key={messageId}
                         files={pdfFiles}
+                        messageId={messageId}
+                        onExpand={setExpandedMessageId}
+                        isExpanded={expandedMessageId === messageId}
+                        onMinimize={() => setExpandedMessageId(null)}
                       />
                     );
                   } else if (item.type === 'requirements') {
                     const requirements = item.data as Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }>;
+                    const messageId = `requirements-${idx}-${requirements.map(r => r.id).join('-')}`;
                     return (
                       <RequirementsMessage
-                        key={`requirements-${idx}-${requirements.map(r => r.id).join('-')}`}
+                        key={messageId}
                         requirements={requirements}
                         usecaseId={usecaseId || ""}
+                        messageId={messageId}
+                        onExpand={setExpandedMessageId}
+                        isExpanded={expandedMessageId === messageId}
+                        onMinimize={() => setExpandedMessageId(null)}
+                      />
+                    );
+                  } else if (item.type === 'scenarios') {
+                    const scenarios = item.data as Array<{ id: string; display_id: number; scenario_name: string; scenario_description: string; scenario_id?: string; requirement_id: string; requirement_display_id: number; flows?: any[]; created_at?: string }>;
+                    const messageId = `scenarios-${idx}-${scenarios.map(s => s.id).join('-')}`;
+                    const isExpanded = expandedMessageId === messageId;
+                    console.log('[SCENARIOS-EXPAND] ChatInterface rendering scenarios:', { messageId, expandedMessageId, isExpanded, scenariosCount: scenarios.length });
+                    return (
+                      <ScenariosMessage
+                        key={messageId}
+                        scenarios={scenarios}
+                        usecaseId={usecaseId || ""}
+                        messageId={messageId}
+                        onExpand={setExpandedMessageId}
+                        isExpanded={isExpanded}
+                        onMinimize={() => setExpandedMessageId(null)}
                       />
                     );
                   } else {
