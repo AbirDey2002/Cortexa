@@ -2,66 +2,100 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Cortexa Design System - Modern Dark UI inspired by Google Gemini
-All colors MUST be HSL for proper theming.
-*/
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+/* Cortexa Design System - Dark Theme with Blue/Purple Accents */
 
 @layer base {
   :root {
-    /* Dark theme - primary colors */
-    --background: 220 13% 8%;
-    --foreground: 220 15% 92%;
+    --background: 220 20% 4%;
+    --foreground: 210 40% 98%;
 
-    /* Card and surface colors */
-    --card: 220 13% 10%;
-    --card-foreground: 220 15% 92%;
-    --card-hover: 220 13% 12%;
+    --card: 220 20% 7%;
+    --card-foreground: 210 40% 98%;
 
-    /* Popover colors */
-    --popover: 220 13% 9%;
-    --popover-foreground: 220 15% 92%;
+    --popover: 220 20% 7%;
+    --popover-foreground: 210 40% 98%;
 
-    /* Brand colors - Dark blue palette */
-    --primary: 220 70% 40%;
-    --primary-foreground: 220 15% 92%;
-    --primary-glow: 220 70% 50%;
-    --primary-muted: 220 30% 25%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 220 20% 4%;
 
-    /* Secondary accent - Purple */
-    --secondary: 260 60% 60%;
-    --secondary-foreground: 220 15% 92%;
-    --secondary-muted: 260 15% 25%;
+    --secondary: 263 70% 58%;
+    --secondary-foreground: 210 40% 98%;
 
-    /* Muted colors for less prominent elements */
-    --muted: 220 13% 15%;
-    --muted-foreground: 220 15% 65%;
+    --muted: 220 20% 12%;
+    --muted-foreground: 215 20% 65%;
 
-    /* Accent colors */
-    --accent: 220 13% 18%;
-    --accent-foreground: 220 15% 85%;
+    --accent: 263 70% 58%;
+    --accent-foreground: 210 40% 98%;
 
-    /* Destructive colors */
     --destructive: 0 84% 60%;
-    --destructive-foreground: 220 15% 92%;
+    --destructive-foreground: 210 40% 98%;
 
-    /* Border and input colors */
-    --border: 220 13% 20%;
-    --input: 220 13% 15%;
-    --ring: 240 100% 65%;
+    --border: 220 20% 18%;
+    --input: 220 20% 18%;
+    --ring: 217 91% 60%;
+
+    --radius: 0.75rem;
+
+    /* Custom Cortexa tokens */
+    --gradient-primary: linear-gradient(135deg, hsl(217 91% 60%) 0%, hsl(263 70% 58%) 100%);
+    --gradient-hero: linear-gradient(180deg, hsl(220 20% 4%) 0%, hsl(220 25% 8%) 100%);
+    --gradient-card: linear-gradient(145deg, hsl(220 20% 10%) 0%, hsl(220 20% 6%) 100%);
+    --glow-primary: 0 0 60px hsl(217 91% 60% / 0.3);
+    --glow-secondary: 0 0 60px hsl(263 70% 58% / 0.3);
+
+    --sidebar-background: 220 20% 6%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 217 91% 60%;
+    --sidebar-primary-foreground: 220 20% 4%;
+    --sidebar-accent: 220 20% 12%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 220 20% 18%;
+    --sidebar-ring: 217 91% 60%;
 
     /* Chat bubble colors */
     --chat-user: 220 13% 12%;
     --chat-assistant: 220 13% 15%;
+  }
 
-    /* Sidebar colors */
-    --sidebar: 220 13% 6%;
-    --sidebar-foreground: 220 15% 92%;
-    --sidebar-muted: 220 15% 65%;
-    --sidebar-accent: 220 13% 15%;
-    --sidebar-border: 220 13% 15%;
+  .dark {
+    --background: 220 20% 4%;
+    --foreground: 210 40% 98%;
 
-    /* Radius */
-    --radius: 0.5rem;
+    --card: 220 20% 7%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 220 20% 7%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 220 20% 4%;
+
+    --secondary: 263 70% 58%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 220 20% 12%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 263 70% 58%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 220 20% 18%;
+    --input: 220 20% 18%;
+    --ring: 217 91% 60%;
+
+    --sidebar-background: 220 20% 6%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 217 91% 60%;
+    --sidebar-primary-foreground: 220 20% 4%;
+    --sidebar-accent: 220 20% 12%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 220 20% 18%;
+    --sidebar-ring: 217 91% 60%;
   }
 }
 
@@ -69,9 +103,14 @@ All colors MUST be HSL for proper theming.
   * {
     @apply border-border;
   }
+
   body {
-    @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
   }
   
   /* Remove blue focus outline from textarea */
@@ -79,6 +118,87 @@ All colors MUST be HSL for proper theming.
     outline: none !important;
     box-shadow: none !important;
     border-color: transparent !important;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: var(--gradient-primary);
+  }
+
+  .bg-gradient-primary {
+    background-image: var(--gradient-primary);
+  }
+
+  .bg-gradient-hero {
+    background-image: var(--gradient-hero);
+  }
+
+  .bg-gradient-card {
+    background-image: var(--gradient-card);
+  }
+
+  .shadow-glow {
+    box-shadow: var(--glow-primary);
+  }
+
+  .shadow-glow-secondary {
+    box-shadow: var(--glow-secondary);
+  }
+
+  .glass {
+    @apply bg-card/80 backdrop-blur-xl border border-border/50;
+  }
+
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-20px); }
+  }
+
+  .animate-pulse-glow {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 20px hsl(217 91% 60% / 0.3); }
+    50% { box-shadow: 0 0 40px hsl(217 91% 60% / 0.5); }
+  }
+
+  .font-display {
+    font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-in-out;
+  }
+
+  .animate-fade-in-up {
+    animation: fadeInUp 0.6s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(30px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 }
 
@@ -151,6 +271,81 @@ All colors MUST be HSL for proper theming.
     background-color: transparent;
     transform: translateY(0);
   }
+}
+
+/* Homepage animations */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes gradientShift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.6s ease-out;
+}
+
+.animate-slide-in-left {
+  animation: slideInLeft 0.6s ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 0.6s ease-out;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.4s ease-out;
+}
+
+.animate-gradient {
+  background-size: 200% 200%;
+  animation: gradientShift 3s ease infinite;
 }
 
 /* Custom scrollbar */

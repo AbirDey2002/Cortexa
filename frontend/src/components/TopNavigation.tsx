@@ -1,4 +1,5 @@
-            import { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { ChevronDown, User, Settings, BarChart3, LogOut } from "lucide-react";
 import {
   DropdownMenu,
@@ -11,7 +12,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useSidebar } from "@/components/ui/sidebar";
+import { useAuth } from "@/contexts/AuthContext";
 import { apiGet } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
 
 interface TopNavigationProps {
   currentModel: string;
@@ -29,6 +32,18 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
   const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const { state: sidebarState } = useSidebar();
   const isSidebarCollapsed = sidebarState === "collapsed";
+  const { logout } = useAuth();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  const handleLogout = () => {
+    logout();
+    toast({
+      title: "Logged out",
+      description: "You have been successfully logged out.",
+    });
+    navigate("/");
+  };
 
   // Fetch models from backend
   useEffect(() => {
@@ -127,7 +142,10 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
               <span>Settings</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="cursor-pointer hover:bg-accent hover:text-accent-foreground text-destructive">
+            <DropdownMenuItem 
+              className="cursor-pointer hover:bg-accent hover:text-accent-foreground text-destructive"
+              onClick={handleLogout}
+            >
               <LogOut className="mr-2 h-4 w-4" />
               <span>Logout</span>
             </DropdownMenuItem>

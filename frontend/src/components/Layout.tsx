@@ -9,11 +9,11 @@ interface LayoutProps {
   children?: React.ReactNode;
   initialUsecaseId?: string;
   onUsecaseChange?: (usecaseId: string) => void;
+  userId: string;
 }
 
-export function Layout({ children, initialUsecaseId, onUsecaseChange }: LayoutProps) {
+export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: LayoutProps) {
   const [currentModel, setCurrentModel] = useState("gemini-2.5-flash-lite");
-  const [userId, setUserId] = useState<string>("");
   const [activeUsecaseId, setActiveUsecaseId] = useState<string | null>(null);
   
   // Load model from usecase when usecase changes
@@ -32,40 +32,31 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange }: LayoutPr
     }
   }, [activeUsecaseId]);
 
-  // Use hardcoded user ID from backend
+  // Load usecases and set active usecase if provided
   useEffect(() => {
+    if (!userId) return;
+    
     (async () => {
       try {
-        // Try to get existing usecases first
+        // Try to get existing usecases
         const usecases = await apiGet<any[]>("/frontend/usecases/list");
         
-        // Set the user ID if we have usecases
-        if (usecases && usecases.length > 0) {
-          setUserId(usecases[0].user_id);
-          
-          // If there's an initial usecase ID from the URL, use it
-          if (initialUsecaseId) {
-            // Verify the usecase exists
-            const usecaseExists = usecases.some(u => u.usecase_id === initialUsecaseId);
-            if (usecaseExists) {
-              setActiveUsecaseId(initialUsecaseId);
-              return;
-            }
+        // If there's an initial usecase ID from the URL, use it
+        if (initialUsecaseId && usecases) {
+          // Verify the usecase exists
+          const usecaseExists = usecases.some(u => u.usecase_id === initialUsecaseId);
+          if (usecaseExists) {
+            setActiveUsecaseId(initialUsecaseId);
+            return;
           }
-          
-          // Don't automatically set an active usecase - let the user choose
-          return;
         }
         
-        // Just set the user ID if we don't have usecases
-        setUserId("52588196-f538-42bf-adb8-df885ab0120c");
+        // Don't automatically set an active usecase - let the user choose
       } catch (e) {
         console.error("Failed to get usecases:", e);
-        // Fallback to hardcoded ID if fetching fails
-        setUserId("52588196-f538-42bf-adb8-df885ab0120c");
       }
     })();
-  }, [initialUsecaseId, onUsecaseChange]);
+  }, [initialUsecaseId, onUsecaseChange, userId]);
   
   // Listen for usecase creation events from ChatInterface
   useEffect(() => {
