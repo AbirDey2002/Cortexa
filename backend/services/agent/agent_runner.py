@@ -20,6 +20,7 @@ from models.file_processing.ocr_records import OCROutputs, OCRInfo
 from models.file_processing.file_metadata import FileMetadata
 from models.generator.requirement import Requirement
 from models.generator.scenario import Scenario
+from models.generator.test_case import TestCase
 from services.llm.gemini_conversational.history_manager import manage_chat_history_for_usecase
 from core.env_config import get_env_variable
 from core.config import AgentLogConfigs
@@ -1366,8 +1367,534 @@ def tool_read_scenario(usecase_id: UUID, display_id: int) -> Dict[str, Any]:
         return {"error": "internal_error", "message": str(e)}
 
 
-def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
-    """Build LangChain tool objects bound to a specific usecase_id with async wrappers and tracing."""
+def tool_start_testcase_generation(usecase_id: UUID) -> Dict[str, Any]:
+    """Check if test case generation can be started.
+    Returns status indicating if confirmation is needed or generation state.
+    """
+    try:
+        with get_db_context() as db:
+            rec = db.query(UsecaseMetadata).filter(
+                UsecaseMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.is_deleted == False,
+            ).first()
+            if not rec:
+                return {"error": "usecase_not_found"}
+            
+            scenario_generation = rec.scenario_generation or "Not Started"
+            test_case_generation = rec.test_case_generation or "Not Started"
+            
+            logger.info(_color(
+                f"[TESTCASE-GEN] start requested for usecase={usecase_id} "
+                f"scenario_generation={scenario_generation} test_case_generation={test_case_generation}",
+                "34"
+            ))
+            
+            # Gate 1: Scenario generation must be completed
+            if scenario_generation == "Not Started":
+                return {
+                    "error": "precondition_not_met",
+                    "message": "Scenarios must be generated first before generating test cases. Would you like me to start scenario generation?",
+                    "scenario_generation": scenario_generation,
+                    "test_case_generation": test_case_generation
+                }
+            
+            if scenario_generation == "In Progress":
+                return {
+                    "error": "precondition_not_met",
+                    "message": "Scenarios are currently being generated. Please wait for scenario generation to complete, then you can generate test cases.",
+                    "scenario_generation": scenario_generation,
+                    "test_case_generation": test_case_generation
+                }
+            
+            if scenario_generation != "Completed":
+                return {
+                    "error": "precondition_not_met",
+                    "message": f"Scenario generation status is '{scenario_generation}'. Scenarios must be completed before generating test cases.",
+                    "scenario_generation": scenario_generation,
+                    "test_case_generation": test_case_generation
+                }
+            
+            # Gate 2: Check test case generation status
+            if test_case_generation == "In Progress":
+                return {
+                    "status": "in_progress",
+                    "message": "Test case generation is already running. You'll be notified when complete."
+                }
+            
+            if test_case_generation == "Completed":
+                return {
+                    "status": "already_completed",
+                    "message": "Test cases already generated. You can view or query them now."
+                }
+            
+            if test_case_generation == "Failed":
+                return {
+                    "status": "retry_allowed",
+                    "message": "Previous test case generation failed. I can retry if you'd like."
+                }
+            
+            # Gate 3: Must be Not Started
+            if test_case_generation == "Not Started":
+                return {
+                    "status": "confirmation_required",
+                    "message": "Ready to start test case generation. Awaiting user confirmation."
+                }
+            
+            return {"error": "unexpected_state", "test_case_generation": test_case_generation}
+    except Exception as e:
+        logger.exception(_color(f"[TESTCASE-GEN] tool error: {e}", "31"))
+        return {"error": "internal_error"}
+
+
+def tool_show_testcases(usecase_id: UUID) -> Dict[str, Any]:
+    """Create [modal] placeholder in chat_history for test cases display.
+    Only call when user asks to see/show test cases.
+    Similar to tool_show_scenarios but for test cases.
+    """
+    logger.info(_color(f"[SHOW-TESTCASES] Function called for usecase_id={usecase_id}", "36"))
+    with get_db_context() as db:
+        # Verify usecase exists
+        usecase = db.query(UsecaseMetadata).filter(
+            UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.is_deleted == False,
+        ).first()
+        
+        if not usecase:
+            return {"error": "usecase_not_found"}
+        
+        # Check test_case_generation status (allow "In Progress" or "Completed")
+        test_case_gen_status = usecase.test_case_generation or "Not Started"
+        if test_case_gen_status not in ("In Progress", "Completed"):
+            return {
+                "error": "testcases_not_ready",
+                "message": f"Test case generation is '{test_case_gen_status}'. {'Please wait for generation to start.' if test_case_gen_status == 'Not Started' else 'Please wait for generation to complete or retry if failed.'}",
+                "test_case_generation": test_case_gen_status
+            }
+        
+        # Get current chat history
+        chat_history = usecase.chat_history or []
+        
+        # Remove any existing testcases markers (keep requirements, scenarios, and PDF markers)
+        testcases_markers_before = [e for e in chat_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "testcases"]
+        
+        filtered_history = [
+            entry
+            for entry in chat_history
+            if not (isinstance(entry, dict) and entry.get("modal", {}).get("type") == "testcases")
+        ]
+        
+        # Find the user message we just added (should be first or near the beginning)
+        user_message = None
+        user_index = -1
+        for i, entry in enumerate(filtered_history):
+            if isinstance(entry, dict) and "user" in entry:
+                user_message = entry
+                user_index = i
+                break
+        
+        if not user_message or user_index < 0:
+            # If no user message found, append to end
+            from datetime import datetime, timezone
+            modal_timestamp = datetime.now(timezone.utc).isoformat()
+        else:
+            # Parse user message timestamp and add 1 second
+            try:
+                from datetime import datetime, timezone
+                user_timestamp_str = user_message.get("timestamp", "")
+                if user_timestamp_str:
+                    user_timestamp = datetime.fromisoformat(user_timestamp_str.replace('Z', '+00:00'))
+                    modal_timestamp = datetime.fromtimestamp(user_timestamp.timestamp() + 1, tz=timezone.utc).isoformat()
+                else:
+                    modal_timestamp = datetime.now(timezone.utc).isoformat()
+            except Exception as e:
+                logger.warning(_color(f"[SHOW-TESTCASES] Error parsing timestamp: {e}", "33"))
+                from datetime import datetime, timezone
+                modal_timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Create [modal] marker - NO TEXT DATA, only usecase_id reference
+        # Include top-level timestamp for proper sorting in chat history
+        modal_marker = {
+            "modal": {
+                "type": "testcases",
+                "usecase_id": str(usecase_id),
+                "timestamp": modal_timestamp
+            },
+            "timestamp": modal_timestamp
+        }
+        
+        # Insert marker right after user message (or at beginning if no user message)
+        if user_index >= 0:
+            updated_history = (
+                filtered_history[:user_index + 1] + 
+                [modal_marker] + 
+                filtered_history[user_index + 1:]
+            )
+        else:
+            updated_history = [modal_marker] + filtered_history
+        
+        # Update chat history
+        usecase.chat_history = updated_history
+        db.commit()
+        
+        # Verify marker was saved
+        db.refresh(usecase)
+        saved_history = usecase.chat_history or []
+        testcase_markers = [e for e in saved_history if isinstance(e, dict) and e.get("modal", {}).get("type") == "testcases"]
+        
+        logger.info(_color(
+            f"[SHOW-TESTCASES] Created modal marker for usecase_id={usecase_id} | "
+            f"Total history entries: {len(saved_history)} | "
+            f"Testcase markers found: {len(testcase_markers)} | "
+            f"Marker: {modal_marker}",
+            "34"
+        ))
+        
+        if len(testcase_markers) == 0:
+            logger.error(_color(
+                f"[SHOW-TESTCASES-ERROR] Modal marker was NOT saved to chat_history! "
+                f"usecase_id={usecase_id}",
+                "31"
+            ))
+        
+        return {
+            "status": "success",
+            "message": f"Test cases will be displayed above for you to review.",
+            "usecase_id": str(usecase_id)
+        }
+
+
+def tool_read_testcase(usecase_id: UUID, display_id: int) -> Dict[str, Any]:
+    """Read a specific test case by display_id for agent analysis.
+    Returns formatted test case text.
+    """
+    try:
+        with get_db_context() as db:
+            # Verify usecase exists
+            usecase = db.query(UsecaseMetadata).filter(
+                UsecaseMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.is_deleted == False,
+            ).first()
+            
+            if not usecase:
+                return {"error": "usecase_not_found"}
+            
+            # Check test_case_generation status
+            test_case_gen_status = usecase.test_case_generation or "Not Started"
+            if test_case_gen_status not in ("In Progress", "Completed"):
+                return {
+                    "error": "testcases_not_ready",
+                    "message": f"Test case generation is '{test_case_gen_status}'. Test cases are not available yet.",
+                    "test_case_generation": test_case_gen_status
+                }
+            
+            # Query all test cases for usecase, ordered by created_at
+            from models.generator.test_case import TestCase
+            all_test_cases = db.query(TestCase).join(Scenario).join(Requirement).filter(
+                Requirement.usecase_id == usecase_id,
+                TestCase.is_deleted == False,
+                Scenario.is_deleted == False,
+                Requirement.is_deleted == False,
+            ).order_by(TestCase.created_at.asc()).all()
+            
+            if display_id < 1 or display_id > len(all_test_cases):
+                return {
+                    "error": "testcase_not_found",
+                    "message": f"Test case with display_id {display_id} not found. Available range: 1-{len(all_test_cases)}"
+                }
+            
+            test_case = all_test_cases[display_id - 1]  # display_id is 1-based
+            
+            # Parse test_case_text JSON
+            try:
+                import json
+                test_case_json = json.loads(test_case.test_case_text) if test_case.test_case_text else {}
+            except Exception:
+                test_case_json = {}
+            
+            # Format as readable text (similar to read_scenario format)
+            formatted_text_parts = []
+            
+            # Add test case ID
+            tc_id = test_case_json.get("id", "")
+            if tc_id:
+                formatted_text_parts.append(f"## Test Case: {tc_id}\n")
+            
+            # Add test case title
+            tc_title = test_case_json.get("test case", "")
+            if tc_title:
+                formatted_text_parts.append(f"### Title\n{tc_title}\n")
+            
+            # Add description
+            description = test_case_json.get("description", "")
+            if description:
+                formatted_text_parts.append(f"### Description\n{description}\n")
+            
+            # Add flow
+            flow = test_case_json.get("flow", "")
+            if flow:
+                formatted_text_parts.append(f"### Flow\n{flow}\n")
+            
+            # Add requirement and scenario IDs
+            req_id = test_case_json.get("requirementId", "")
+            scen_id = test_case_json.get("scenarioId", "")
+            if req_id or scen_id:
+                formatted_text_parts.append("### Mapping\n")
+                if req_id:
+                    formatted_text_parts.append(f"**Requirement ID**: {req_id}\n")
+                if scen_id:
+                    formatted_text_parts.append(f"**Scenario ID**: {scen_id}\n")
+            
+            # Add preconditions
+            preconditions = test_case_json.get("preConditions", [])
+            if preconditions:
+                formatted_text_parts.append("### Preconditions\n")
+                for pc in preconditions:
+                    formatted_text_parts.append(f"- {pc}\n")
+            
+            # Add test data
+            test_data = test_case_json.get("testData", [])
+            if test_data:
+                formatted_text_parts.append("### Test Data\n")
+                for td in test_data:
+                    formatted_text_parts.append(f"- {td}\n")
+            
+            # Add test steps
+            test_steps = test_case_json.get("testSteps", [])
+            if test_steps:
+                formatted_text_parts.append("### Test Steps\n")
+                for step in test_steps:
+                    formatted_text_parts.append(f"{step}\n")
+            
+            # Add expected results
+            expected_results = test_case_json.get("expectedResults", [])
+            if expected_results:
+                formatted_text_parts.append("### Expected Results\n")
+                for er in expected_results:
+                    formatted_text_parts.append(f"{er}\n")
+            
+            # Add post conditions
+            post_conditions = test_case_json.get("postConditions", [])
+            if post_conditions:
+                formatted_text_parts.append("### Post Conditions\n")
+                for pc in post_conditions:
+                    formatted_text_parts.append(f"- {pc}\n")
+            
+            # Add risk analysis
+            risk = test_case_json.get("risk_analysis", "")
+            if risk:
+                formatted_text_parts.append(f"### Risk Analysis\n{risk}\n")
+            
+            # Add requirement category
+            category = test_case_json.get("requirement_category", "")
+            if category:
+                formatted_text_parts.append(f"### Requirement Category\n{category}\n")
+            
+            # Add lens
+            lens = test_case_json.get("lens", "")
+            if lens:
+                formatted_text_parts.append(f"### Lens\n{lens}\n")
+            
+            # Combine all parts
+            formatted_text = "\n".join(formatted_text_parts)
+            
+            total_chars = len(formatted_text)
+            tc_title = test_case_json.get("test case", f"Test Case {display_id}")
+            
+            logger.info(_color(
+                f"[READ-TESTCASE] usecase={usecase_id} display_id={display_id} "
+                f"test_case_id={test_case.id} total_chars={total_chars}",
+                "34"
+            ))
+            
+            return {
+                "usecase_id": str(usecase_id),
+                "display_id": display_id,
+                "test_case_id": str(test_case.id),
+                "test_case_text": formatted_text,
+                "test_case_json": test_case_json,
+                "total_chars": total_chars,
+                "message": f"Retrieved test case TC-{display_id}: {tc_title} ({total_chars} characters)."
+            }
+    except Exception as e:
+        logger.error(_color(f"[READ-TESTCASE] error: {e}", "31"), exc_info=True)
+        return {"error": "internal_error", "message": str(e)}
+
+
+def _get_usecase_status_for_filtering(usecase_id: UUID) -> Dict[str, Any]:
+    """Get usecase status for tool filtering and prompt generation."""
+    try:
+        return tool_get_usecase_status(usecase_id)
+    except Exception as e:
+        logger.warning(_color(f"[STATUS-FILTER] Error getting status: {e}", "33"))
+        return {
+            "text_extraction": "Not Started",
+            "requirement_generation": "Not Started",
+            "scenario_generation": "Not Started",
+            "test_case_generation": "Not Started",
+            "requirement_generation_confirmed": False,
+        }
+
+def _filter_tools_by_status(tools: List[Any], status: Dict[str, Any]) -> List[Any]:
+    """Filter tools based on current pipeline status."""
+    text_extraction = status.get("text_extraction") or "Not Started"
+    requirement_generation = status.get("requirement_generation") or "Not Started"
+    scenario_generation = status.get("scenario_generation") or "Not Started"
+    requirement_confirmed = status.get("requirement_generation_confirmed", False)
+    
+    filtered = []
+    tool_names = [getattr(t, "name", None) for t in tools]
+    
+    # Always available
+    if "get_usecase_status" in tool_names:
+        filtered.append(tools[tool_names.index("get_usecase_status")])
+    if "get_documents_markdown" in tool_names:
+        filtered.append(tools[tool_names.index("get_documents_markdown")])
+    
+    # Text extraction tools - available if extraction completed
+    if text_extraction == "Completed":
+        if "check_text_extraction_status" in tool_names:
+            filtered.append(tools[tool_names.index("check_text_extraction_status")])
+        if "show_extracted_text" in tool_names:
+            filtered.append(tools[tool_names.index("show_extracted_text")])
+        if "read_extracted_text" in tool_names:
+            filtered.append(tools[tool_names.index("read_extracted_text")])
+    
+    # Requirement generation - available if text extraction completed
+    if text_extraction == "Completed":
+        if "start_requirement_generation" in tool_names:
+            filtered.append(tools[tool_names.index("start_requirement_generation")])
+    
+    # Requirement reading/showing - available if requirement generation in progress or completed
+    if requirement_generation in ("In Progress", "Completed"):
+        if "get_requirements" in tool_names:
+            filtered.append(tools[tool_names.index("get_requirements")])
+        if "read_requirement" in tool_names:
+            filtered.append(tools[tool_names.index("read_requirement")])
+        if "show_requirements" in tool_names:
+            filtered.append(tools[tool_names.index("show_requirements")])
+    
+    # Scenario generation - available if requirements completed
+    if requirement_generation == "Completed":
+        if "start_scenario_generation" in tool_names:
+            filtered.append(tools[tool_names.index("start_scenario_generation")])
+    
+    # Scenario reading/showing - available if scenario generation in progress or completed
+    if scenario_generation in ("In Progress", "Completed"):
+        if "read_scenario" in tool_names:
+            filtered.append(tools[tool_names.index("read_scenario")])
+        if "show_scenarios" in tool_names:
+            filtered.append(tools[tool_names.index("show_scenarios")])
+    
+    # Test case generation - available if scenarios completed
+    test_case_generation = status.get("test_case_generation") or "Not Started"
+    if scenario_generation == "Completed":
+        if "start_testcase_generation" in tool_names:
+            filtered.append(tools[tool_names.index("start_testcase_generation")])
+    
+    # Test case reading/showing - available if test case generation in progress or completed
+    if test_case_generation in ("In Progress", "Completed"):
+        if "read_testcase" in tool_names:
+            filtered.append(tools[tool_names.index("read_testcase")])
+        if "show_testcases" in tool_names:
+            filtered.append(tools[tool_names.index("show_testcases")])
+    
+    logger.info(_color(
+        f"[TOOL-FILTER] Filtered {len(tools)} tools to {len(filtered)} based on status: "
+        f"text_extraction={text_extraction}, requirement_generation={requirement_generation}, "
+        f"scenario_generation={scenario_generation}, test_case_generation={test_case_generation}",
+        "34"
+    ))
+    
+    return filtered
+
+def _generate_dynamic_prompt_section(status: Dict[str, Any], base_prompt: str) -> str:
+    """Generate dynamic prompt section based on current usecase status."""
+    text_extraction = status.get("text_extraction") or "Not Started"
+    requirement_generation = status.get("requirement_generation") or "Not Started"
+    scenario_generation = status.get("scenario_generation") or "Not Started"
+    test_case_generation = status.get("test_case_generation") or "Not Started"
+    
+    dynamic_section = "\n\n### CURRENT PIPELINE STATUS AND AVAILABLE ACTIONS\n\n"
+    dynamic_section += f"**Current Status:**\n"
+    dynamic_section += f"- Text Extraction: {text_extraction}\n"
+    dynamic_section += f"- Requirement Generation: {requirement_generation}\n"
+    dynamic_section += f"- Scenario Generation: {scenario_generation}\n"
+    dynamic_section += f"- Test Case Generation: {test_case_generation}\n\n"
+    
+    # Available actions based on status
+    dynamic_section += "**Available Actions Right Now:**\n"
+    
+    if text_extraction == "Completed":
+        dynamic_section += "- You can read/view documents using `show_extracted_text`, `read_extracted_text`\n"
+        if requirement_generation == "Not Started":
+            dynamic_section += "- **You can start requirement generation** using `start_requirement_generation` if user requests it\n"
+        elif requirement_generation == "In Progress":
+            dynamic_section += "- Requirement generation is in progress - user must wait\n"
+            dynamic_section += "- If user asks about scenarios/test cases while this is running, tell them to wait\n"
+        elif requirement_generation == "Completed":
+            dynamic_section += "- You can read/view requirements using `get_requirements`, `read_requirement`, `show_requirements`\n"
+            if scenario_generation == "Not Started":
+                dynamic_section += "- **You can start scenario generation** using `start_scenario_generation` if user requests it\n"
+            elif scenario_generation == "In Progress":
+                dynamic_section += "- Scenario generation is in progress - user must wait\n"
+                dynamic_section += "- If user asks about scenarios/test cases while this is running, tell them to wait\n"
+            elif scenario_generation == "Completed":
+                dynamic_section += "- You can read/view scenarios using `read_scenario`, `show_scenarios`\n"
+                if test_case_generation == "Not Started":
+                    dynamic_section += "- **You can start test case generation** using `start_testcase_generation` if user requests it\n"
+                elif test_case_generation == "In Progress":
+                    dynamic_section += "- Test case generation is in progress - user must wait\n"
+                    dynamic_section += "- If user asks about test cases while this is running, tell them to wait\n"
+                elif test_case_generation == "Completed":
+                    dynamic_section += "- You can read/view test cases using `read_testcase`, `show_testcases`\n"
+    else:
+        dynamic_section += "- Text extraction is not complete - user must wait for documents to be processed\n"
+        dynamic_section += "- If user asks about requirements/scenarios/test cases while extraction is running, tell them to wait\n"
+    
+    dynamic_section += "\n**IMPORTANT - Handling 'Wait' Scenarios:**\n"
+    dynamic_section += "- If a process is 'In Progress' and user asks about future steps, clearly explain:\n"
+    dynamic_section += "  1. What is currently running\n"
+    dynamic_section += "  2. What they need to wait for\n"
+    dynamic_section += "  3. What will be available after completion\n"
+    dynamic_section += "- Example: 'Requirement generation is currently in progress. Once it completes, I'll be able to generate scenarios for you. Please wait for the notification.'\n"
+    
+    # Add scenario generation emphasis if conditions are met
+    if requirement_generation == "Completed" and scenario_generation == "Not Started":
+        dynamic_section += "\n**CRITICAL - Scenario Generation Ready:**\n"
+        dynamic_section += "- Requirements are completed and scenario generation is available\n"
+        dynamic_section += "- **If user asks to generate scenarios, you MUST call `start_scenario_generation()` tool immediately**\n"
+        dynamic_section += "- Do NOT just respond with text - you MUST call the tool\n"
+        dynamic_section += "- Examples of user requests that require tool call:\n"
+        dynamic_section += "  - 'generate scenarios' → Call `start_scenario_generation()`\n"
+        dynamic_section += "  - 'create scenarios' → Call `start_scenario_generation()`\n"
+        dynamic_section += "  - 'I want scenarios' → Call `start_scenario_generation()`\n"
+        dynamic_section += "  - 'can you generate scenarios?' → Call `start_scenario_generation()`\n"
+    
+    # Add test case generation emphasis if conditions are met
+    if scenario_generation == "Completed" and test_case_generation == "Not Started":
+        dynamic_section += "\n**CRITICAL - Test Case Generation Ready:**\n"
+        dynamic_section += "- Scenarios are completed and test case generation is available\n"
+        dynamic_section += "- **If user asks to generate test cases, you MUST call `start_testcase_generation()` tool immediately**\n"
+        dynamic_section += "- Do NOT just respond with text - you MUST call the tool\n"
+        dynamic_section += "- Examples of user requests that require tool call:\n"
+        dynamic_section += "  - 'generate test cases' → Call `start_testcase_generation()`\n"
+        dynamic_section += "  - 'create test cases' → Call `start_testcase_generation()`\n"
+        dynamic_section += "  - 'I want test cases' → Call `start_testcase_generation()`\n"
+        dynamic_section += "  - 'can you generate test cases?' → Call `start_testcase_generation()`\n"
+    
+    return base_prompt + dynamic_section
+
+def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = None) -> Tuple[List[Any], Dict[str, Any]]:
+    """Build LangChain tool objects bound to a specific usecase_id with async wrappers and tracing.
+    
+    Args:
+        usecase_id: The usecase identifier
+        tracer: TraceCollector for tracking tool calls
+        status: Optional usecase status dict for filtering tools
+    
+    Returns:
+        Tuple of (tools_list, tool_name_to_tool_dict) for filtering
+    """
 
     @lc_tool
     async def get_usecase_status() -> Dict[str, Any]:
@@ -1909,20 +2436,146 @@ def build_tools(usecase_id, tracer: TraceCollector) -> List[Any]:
             logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
             raise
 
-    return [
+    @lc_tool
+    async def start_testcase_generation() -> Dict[str, Any]:
+        """
+        Request test case generation. **CRITICAL: You MUST call this tool when the user asks to generate test cases.**
+        
+        Call this when ALL conditions are met:
+        - scenario_generation is "Completed"
+        - test_case_generation is "Not Started"
+        - User explicitly requests test case generation (e.g., "generate test cases", "create test cases", "generate testcases")
+        
+        **IMPORTANT**: 
+        - If user asks to generate test cases and conditions are met, you MUST call this tool - do not just respond with text.
+        - This tool will trigger a confirmation modal for the user.
+        - After calling this tool, respond: "I've requested test case generation. A confirmation modal will appear. Click 'Yes' to start the background process."
+        - This should be your FINAL action. Do not call other tools after this.
+        
+        Returns: {'status': 'confirmation_required'} if conditions met, or error/status info otherwise.
+        """
+        name = "start_testcase_generation"
+        entry = tracer.start_tool(name, args_preview="{}")
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_start_testcase_generation, usecase_id)
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, True, result_preview=str(result), duration_ms=duration_ms)
+            try:
+                import json as _json
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
+    @lc_tool
+    async def read_testcase(display_id: int) -> Dict[str, Any]:
+        """
+        Read full test case content from database by display_id for agent analysis.
+        Call when user asks questions about a specific test case and you need to read its content to answer.
+        Use when user asks: "what does test case X say?", "tell me about TC-1", "what are the details of test case 2?"
+        Conditions: test_case_generation must be "In Progress" OR "Completed", display_id must be valid.
+        Returns full, non-truncated test case text for your analysis.
+        Use this text to answer user's question, but do NOT include the full text in your response.
+        """
+        name = "read_testcase"
+        entry = tracer.start_tool(name, args_preview=f'{{"display_id": {display_id}}}')
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] display_id={display_id} usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_read_testcase, usecase_id, display_id)
+            total_chars = result.get("total_chars", 0)
+            tc_title = result.get("test_case_json", {}).get("test case", "N/A")
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, True, result_preview=f"display_id={display_id} title={tc_title} chars={total_chars}", duration_ms=duration_ms, chars_read=total_chars)
+            try:
+                import json as _json
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms chars={total_chars}", "34"))
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
+    @lc_tool
+    async def show_testcases() -> Dict[str, Any]:
+        """
+        Create [modal] placeholder in chat_history to display test cases to user.
+        **MANDATORY**: You MUST call this tool when user explicitly requests to see/view/display test cases.
+        User phrases: "show test cases", "display test cases", "show me the test cases", "view test cases", "show the test cases", "can i see the test cases", "can you show the test cases", "if test cases are done, can i see them", etc.
+        Conditions:
+        1. test_case_generation status is "In Progress" OR "Completed"
+        2. User explicitly asks to see test cases
+        After calling, respond: "I've retrieved the test cases. They will be displayed above for you to review."
+        This tool creates a [modal] placeholder in chat_history (no text data stored).
+        """
+        name = "show_testcases"
+        entry = tracer.start_tool(name, args_preview="{}")
+        start = time.time()
+        logger.info(_color(f"[TOOL-START {name}] usecase_id={usecase_id}", "34"))
+        try:
+            result = await asyncio.to_thread(tool_show_testcases, usecase_id)
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, True, result_preview=f"usecase_id={usecase_id} status={result.get('status', 'unknown')}", duration_ms=duration_ms)
+            try:
+                import json as _json
+                out = _json.dumps(result, ensure_ascii=False)[:5000]
+                if len(_json.dumps(result, ensure_ascii=False)) > 5000:
+                    out += "... [TRUNCATED]"
+                logger.info(_color(f"[TOOL-OUTPUT {name}] {out}", "34"))
+            except Exception:
+                pass
+            logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
+            logger.exception(_color(f"[TOOL-ERROR {name}] {e}", "34"))
+            raise
+
+    all_tools = [
         get_usecase_status,
         get_documents_markdown,
         start_requirement_generation,
         start_scenario_generation,
+        start_testcase_generation,
         get_requirements,
         check_text_extraction_status,
         show_extracted_text,
         read_extracted_text,
         read_requirement,
         read_scenario,
+        read_testcase,
         show_requirements,
         show_scenarios,
+        show_testcases,
     ]
+    
+    # Create mapping for filtering
+    tool_map = {getattr(t, "name", f"tool_{i}"): t for i, t in enumerate(all_tools)}
+    
+    # Filter if status provided
+    if status:
+        all_tools = _filter_tools_by_status(all_tools, status)
+    
+    return all_tools, tool_map
 
 
 def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> Tuple[str, Dict[str, Any]]:
@@ -1985,11 +2638,13 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
     wants_scenario_generation = any(kw in user_text_lower for kw in scenario_generation_keywords) or \
                                  ("scenario" in user_text_lower and ("generate" in user_text_lower or "create" in user_text_lower))
     
+    # Get status BEFORE building tools for filtering and pre-checks
+    status = _get_usecase_status_for_filtering(usecase_id)
+    
     if wants_scenario_generation:
         logger.info(_color(f"[SCENARIO-GEN-PRECHECK] Detected scenario generation intent in user message", "35"))
-        # Check status first to see if we should call the tool
+        # Check status to see if we should call the tool
         try:
-            status = tool_get_usecase_status(usecase_id)
             requirement_generation = status.get("requirement_generation") or "Not Started"
             scenario_generation = status.get("scenario_generation") or "Not Started"
             
@@ -1998,6 +2653,14 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
                 f"scenario_generation={scenario_generation}",
                 "35"
             ))
+            
+            # Check if user is asking about scenarios while something is in progress
+            if requirement_generation == "In Progress":
+                logger.info(_color(
+                    f"[SCENARIO-GEN-PRECHECK] Requirement generation in progress - user must wait",
+                    "35"
+                ))
+                # This will be handled by dynamic prompt, but log for visibility
             
             # If conditions are met for calling the tool, we'll ensure it gets called
             # The agent should call it, but we'll add this as a safeguard
@@ -2009,7 +2672,49 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
         except Exception as e:
             logger.warning(_color(f"[SCENARIO-GEN-PRECHECK] Pre-check failed: {e}", "33"))
     
-    tools = build_tools(usecase_id, tracer)
+    # Pre-check: Detect test case generation intent and ensure tool is called
+    testcase_generation_keywords = [
+        "generate test cases", "create test cases", "generate testcases",
+        "test case generation", "generate test case", "create test case",
+        "start test case generation", "begin test case generation",
+        "test cases for these scenarios", "test cases for scenarios",
+        "generate testcases", "testcases",  # Handle common typos
+    ]
+    wants_testcase_generation = any(kw in user_text_lower for kw in testcase_generation_keywords)
+    
+    if wants_testcase_generation:
+        logger.info(_color(f"[TESTCASE-GEN-PRECHECK] Detected test case generation intent in user message", "35"))
+        # Check status to see if we should call the tool
+        try:
+            scenario_generation = status.get("scenario_generation") or "Not Started"
+            test_case_generation = status.get("test_case_generation") or "Not Started"
+            
+            logger.info(_color(
+                f"[TESTCASE-GEN-PRECHECK] Status: scenario_generation={scenario_generation}, "
+                f"test_case_generation={test_case_generation}",
+                "35"
+            ))
+            
+            # Check if user is asking about test cases while something is in progress
+            if scenario_generation == "In Progress":
+                logger.info(_color(
+                    f"[TESTCASE-GEN-PRECHECK] Scenario generation in progress - user must wait",
+                    "35"
+                ))
+                # This will be handled by dynamic prompt, but log for visibility
+            
+            # If conditions are met for calling the tool, we'll ensure it gets called
+            # The agent should call it, but we'll add this as a safeguard
+            if scenario_generation == "Completed" and test_case_generation == "Not Started":
+                logger.info(_color(
+                    f"[TESTCASE-GEN-PRECHECK] Conditions met - agent should call start_testcase_generation tool",
+                    "35"
+                ))
+        except Exception as e:
+            logger.warning(_color(f"[TESTCASE-GEN-PRECHECK] Pre-check failed: {e}", "33"))
+    
+    # Build tools with status-based filtering
+    tools, tool_map = build_tools(usecase_id, tracer, status=status)
 
     # Determine which model to use
     from core.model_registry import get_default_model, is_valid_model
@@ -2121,7 +2826,17 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
             except Exception:
                 system_prompt_value = None
         if not system_prompt_value:
-            system_prompt_value = get_env_variable("AGENT_SYSTEM_PROMPT", "")
+            # Load from module
+            try:
+                from services.llm.prompts.main_agent_prompt import prompt as base_prompt
+                system_prompt_value = base_prompt
+            except Exception:
+                system_prompt_value = get_env_variable("AGENT_SYSTEM_PROMPT", "")
+        
+        # Generate dynamic prompt section based on current status
+        if system_prompt_value:
+            system_prompt_value = _generate_dynamic_prompt_section(status, system_prompt_value)
+        
         if AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT:
             try:
                 sp = system_prompt_value or ""
@@ -2205,20 +2920,51 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
         except Exception:
             tool_called = False
         
-        # Fallback: If user asked for requirement generation but tool wasn't called, check if we should emit modal
+        # Fallback: If user asked for requirement generation but tool wasn't called, check if we should call the tool
         if not tool_called and wants_requirement_generation:
             logger.info(_color(f"[REQ-GEN-FALLBACK] Tool was not called but user requested requirement generation - checking status", "35"))
             try:
-                status = tool_get_usecase_status(usecase_id)
-                text_extraction = status.get("text_extraction") or "Not Started"
-                requirement_generation = status.get("requirement_generation") or "Not Started"
-                confirmed = status.get("requirement_generation_confirmed", False)
+                status_check = tool_get_usecase_status(usecase_id)
+                text_extraction = status_check.get("text_extraction") or "Not Started"
+                requirement_generation = status_check.get("requirement_generation") or "Not Started"
+                confirmed = status_check.get("requirement_generation_confirmed", False)
+                
+                logger.info(_color(f"[REQ-GEN-FALLBACK] Status check: text_extraction={text_extraction}, requirement_generation={requirement_generation}, confirmed={confirmed}", "35"))
                 
                 if text_extraction == "Completed" and requirement_generation == "Not Started" and not confirmed:
-                    logger.info(_color(f"[REQ-GEN-FALLBACK] Conditions met - emitting confirmation event as fallback", "35"))
-                    tool_called = True  # Treat as if tool was called for modal emission
+                    logger.info(_color(f"[REQ-GEN-FALLBACK] Conditions met - calling start_requirement_generation tool as fallback", "35"))
+                    tool_name = "start_requirement_generation"
+                    tool_entry = None
+                    tool_start_time = None
+                    try:
+                        # Track tool call in tracer
+                        tool_entry = tracer.start_tool(tool_name, args_preview=f'{{"usecase_id": "{usecase_id}"}}')
+                        tool_start_time = time.time()
+                        logger.info(_color(f"[TOOL-START {tool_name}] usecase_id={usecase_id} (FALLBACK)", "34"))
+                        
+                        # Call the synchronous tool function
+                        result = tool_start_requirement_generation(usecase_id)
+                        duration_ms = int((time.time() - tool_start_time) * 1000)
+                        
+                        if result.get("status") == "confirmation_required":
+                            tracer.finish_tool(tool_entry, True, result_preview=f"status=confirmation_required usecase_id={usecase_id}", duration_ms=duration_ms)
+                            logger.info(_color(f"[TOOL-END {tool_name}] duration={duration_ms}ms", "34"))
+                            logger.info(_color(f"[REQ-GEN-FALLBACK] Successfully called start_requirement_generation tool", "35"))
+                            tool_called = True  # Now actually called
+                        else:
+                            error_msg = result.get('error', 'unknown_error')
+                            tracer.finish_tool(tool_entry, False, error=error_msg, duration_ms=duration_ms)
+                            logger.warning(_color(f"[TOOL-ERROR {tool_name}] {error_msg}", "34"))
+                            logger.warning(_color(f"[REQ-GEN-FALLBACK] start_requirement_generation returned error: {error_msg}", "33"))
+                    except Exception as e:
+                        duration_ms = int((time.time() - tool_start_time) * 1000) if tool_start_time else 0
+                        if tool_entry:
+                            tracer.finish_tool(tool_entry, False, error=str(e), duration_ms=duration_ms)
+                        logger.warning(_color(f"[REQ-GEN-FALLBACK] Error calling start_requirement_generation: {e}", "33"), exc_info=True)
+                else:
+                    logger.info(_color(f"[REQ-GEN-FALLBACK] Conditions not met: text_extraction={text_extraction}, requirement_generation={requirement_generation}, confirmed={confirmed}", "35"))
             except Exception as e:
-                logger.warning(_color(f"[REQ-GEN-FALLBACK] Fallback check failed: {e}", "33"))
+                logger.warning(_color(f"[REQ-GEN-FALLBACK] Fallback check failed: {e}", "33"), exc_info=True)
         
         if tool_called:
             logger.info(_color(f"[REQ-GEN-MODAL] Tool was called; checking if confirmation event needed", "35"))
@@ -2291,22 +3037,49 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
         # Use post-check value if pre-check didn't catch it
         final_wants_scenario_generation = wants_scenario_generation or wants_scenario_generation_post
         
-        # Fallback: If user asked for scenario generation but tool wasn't called, check if we should emit modal
+        # Fallback: If user asked for scenario generation but tool wasn't called, check if we should call the tool
         # Also check if agent's response suggests it tried to call the tool
         agent_response_suggests_scenario_gen = "scenario generation" in assistant_text.lower() or "confirmation modal" in assistant_text.lower()
         
         if not scenario_tool_called and (final_wants_scenario_generation or agent_response_suggests_scenario_gen):
             logger.info(_color(f"[SCENARIO-GEN-FALLBACK] Tool was not called but user requested scenario generation (user_message='{user_message[:100]}', agent_response_suggests={agent_response_suggests_scenario_gen}) - checking status", "35"))
             try:
-                status = tool_get_usecase_status(usecase_id)
-                requirement_generation = status.get("requirement_generation") or "Not Started"
-                scenario_generation = status.get("scenario_generation") or "Not Started"
+                status_check = tool_get_usecase_status(usecase_id)
+                requirement_generation = status_check.get("requirement_generation") or "Not Started"
+                scenario_generation = status_check.get("scenario_generation") or "Not Started"
                 
                 logger.info(_color(f"[SCENARIO-GEN-FALLBACK] Status check: requirement_generation={requirement_generation}, scenario_generation={scenario_generation}", "35"))
                 
                 if requirement_generation == "Completed" and scenario_generation == "Not Started":
-                    logger.info(_color(f"[SCENARIO-GEN-FALLBACK] Conditions met - emitting confirmation event as fallback", "35"))
-                    scenario_tool_called = True  # Treat as if tool was called for modal emission
+                    logger.info(_color(f"[SCENARIO-GEN-FALLBACK] Conditions met - calling start_scenario_generation tool as fallback", "35"))
+                    tool_name = "start_scenario_generation"
+                    tool_entry = None
+                    tool_start_time = None
+                    try:
+                        # Track tool call in tracer
+                        tool_entry = tracer.start_tool(tool_name, args_preview=f'{{"usecase_id": "{usecase_id}"}}')
+                        tool_start_time = time.time()
+                        logger.info(_color(f"[TOOL-START {tool_name}] usecase_id={usecase_id}", "34"))
+                        
+                        # Call the synchronous tool function
+                        result = tool_start_scenario_generation(usecase_id)
+                        duration_ms = int((time.time() - tool_start_time) * 1000)
+                        
+                        if result.get("status") == "confirmation_required":
+                            tracer.finish_tool(tool_entry, True, result_preview=f"status=confirmation_required usecase_id={usecase_id}", duration_ms=duration_ms)
+                            logger.info(_color(f"[TOOL-END {tool_name}] duration={duration_ms}ms", "34"))
+                            logger.info(_color(f"[SCENARIO-GEN-FALLBACK] Successfully called start_scenario_generation tool", "35"))
+                            scenario_tool_called = True  # Now actually called
+                        else:
+                            error_msg = result.get('error', 'unknown_error')
+                            tracer.finish_tool(tool_entry, False, error=error_msg, duration_ms=duration_ms)
+                            logger.warning(_color(f"[TOOL-ERROR {tool_name}] {error_msg}", "34"))
+                            logger.warning(_color(f"[SCENARIO-GEN-FALLBACK] start_scenario_generation returned error: {error_msg}", "33"))
+                    except Exception as e:
+                        duration_ms = int((time.time() - tool_start_time) * 1000) if tool_start_time else 0
+                        if tool_entry:
+                            tracer.finish_tool(tool_entry, False, error=str(e), duration_ms=duration_ms)
+                        logger.warning(_color(f"[SCENARIO-GEN-FALLBACK] Error calling start_scenario_generation: {e}", "33"), exc_info=True)
                 else:
                     logger.info(_color(f"[SCENARIO-GEN-FALLBACK] Conditions not met: requirement_generation={requirement_generation}, scenario_generation={scenario_generation}", "35"))
             except Exception as e:
@@ -2353,6 +3126,140 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
                             ))
             except Exception as e:
                 logger.warning(_color(f"[SCENARIO-GEN-MODAL] Event emission failed: {e}", "33"))
+        
+        # Post-run: if agent invoked start_testcase_generation, emit UI confirmation event
+        # Re-check user message for test case generation intent (in case pre-check missed it)
+        user_text_lower_post_tc = user_message.lower()
+        testcase_generation_keywords_post = [
+            "generate test cases", "create test cases", "generate testcases",
+            "test case generation", "generate test case", "create test case",
+            "start test case generation", "begin test case generation",
+            "test cases for these scenarios", "test cases for scenarios",
+            "generate testcases", "testcases",  # Handle common typos
+        ]
+        wants_testcase_generation_post = any(kw in user_text_lower_post_tc for kw in testcase_generation_keywords_post)
+        
+        try:
+            testcase_tool_called = any(
+                (tc.get("name") == "start_testcase_generation") for tc in tracer.data.get("tool_calls", [])
+            )
+            logger.info(_color(f"[TESTCASE-GEN-CHECK] Tool call detection: testcase_tool_called={testcase_tool_called}, wants_testcase_generation={wants_testcase_generation}, wants_testcase_generation_post={wants_testcase_generation_post}, tool_calls_count={len(tracer.data.get('tool_calls', []))}", "35"))
+        except Exception as e:
+            testcase_tool_called = False
+            logger.warning(_color(f"[TESTCASE-GEN-CHECK] Error checking tool calls: {e}", "33"))
+        
+        # Use post-check value if pre-check didn't catch it
+        final_wants_testcase_generation = wants_testcase_generation or wants_testcase_generation_post
+        
+        # Fallback: If user asked for test case generation but tool wasn't called, check if we should call the tool
+        # Also check if agent's response suggests it tried to call the tool
+        agent_response_suggests_testcase_gen = "test case generation" in assistant_text.lower() or "confirmation modal" in assistant_text.lower()
+        
+        if not testcase_tool_called and (final_wants_testcase_generation or agent_response_suggests_testcase_gen):
+            logger.info(_color(f"[TESTCASE-GEN-FALLBACK] Tool was not called but user requested test case generation (user_message='{user_message[:100]}', agent_response_suggests={agent_response_suggests_testcase_gen}) - checking status", "35"))
+            try:
+                status_check = tool_get_usecase_status(usecase_id)
+                scenario_generation = status_check.get("scenario_generation") or "Not Started"
+                test_case_generation = status_check.get("test_case_generation") or "Not Started"
+                
+                logger.info(_color(f"[TESTCASE-GEN-FALLBACK] Status check: scenario_generation={scenario_generation}, test_case_generation={test_case_generation}", "35"))
+                
+                if scenario_generation == "Completed" and test_case_generation == "Not Started":
+                    logger.info(_color(f"[TESTCASE-GEN-FALLBACK] Conditions met - calling start_testcase_generation tool as fallback", "35"))
+                    tool_name = "start_testcase_generation"
+                    tool_entry = None
+                    tool_start_time = None
+                    try:
+                        # Track tool call in tracer
+                        tool_entry = tracer.start_tool(tool_name, args_preview=f'{{"usecase_id": "{usecase_id}"}}')
+                        tool_start_time = time.time()
+                        logger.info(_color(f"[TOOL-START {tool_name}] usecase_id={usecase_id}", "34"))
+                        
+                        # Call the synchronous tool function
+                        result = tool_start_testcase_generation(usecase_id)
+                        duration_ms = int((time.time() - tool_start_time) * 1000)
+                        
+                        if result.get("status") == "confirmation_required":
+                            tracer.finish_tool(tool_entry, True, result_preview=f"status=confirmation_required usecase_id={usecase_id}", duration_ms=duration_ms)
+                            logger.info(_color(f"[TOOL-END {tool_name}] duration={duration_ms}ms", "34"))
+                            logger.info(_color(f"[TESTCASE-GEN-FALLBACK] Successfully called start_testcase_generation tool", "35"))
+                            testcase_tool_called = True  # Now actually called
+                        else:
+                            error_msg = result.get('error', 'unknown_error')
+                            tracer.finish_tool(tool_entry, False, error=error_msg, duration_ms=duration_ms)
+                            logger.warning(_color(f"[TOOL-ERROR {tool_name}] {error_msg}", "34"))
+                            logger.warning(_color(f"[TESTCASE-GEN-FALLBACK] start_testcase_generation returned error: {error_msg}", "33"))
+                    except Exception as e:
+                        duration_ms = int((time.time() - tool_start_time) * 1000) if tool_start_time else 0
+                        if tool_entry:
+                            tracer.finish_tool(tool_entry, False, error=str(e), duration_ms=duration_ms)
+                        logger.warning(_color(f"[TESTCASE-GEN-FALLBACK] Error calling start_testcase_generation: {e}", "33"), exc_info=True)
+                else:
+                    logger.info(_color(f"[TESTCASE-GEN-FALLBACK] Conditions not met: scenario_generation={scenario_generation}, test_case_generation={test_case_generation}", "35"))
+            except Exception as e:
+                logger.warning(_color(f"[TESTCASE-GEN-FALLBACK] Fallback check failed: {e}", "33"), exc_info=True)
+        
+        if testcase_tool_called:
+            logger.info(_color(f"[TESTCASE-GEN-MODAL] Tool was called; checking if confirmation event needed", "35"))
+            try:
+                # First check the tool result from tracer to see if it returned confirmation_required
+                tool_result_confirmation = False
+                try:
+                    all_tool_calls = tracer.data.get("tool_calls", [])
+                    for tc in all_tool_calls:
+                        if tc.get("name") == "start_testcase_generation":
+                            result_preview = tc.get("result_preview", "")
+                            # Check if result_preview contains confirmation_required status
+                            if result_preview and "confirmation_required" in result_preview:
+                                tool_result_confirmation = True
+                                logger.info(_color(f"[TESTCASE-GEN-MODAL] Tool result indicates confirmation_required: {result_preview}", "35"))
+                                break
+                except Exception as e:
+                    logger.warning(_color(f"[TESTCASE-GEN-MODAL] Error checking tool result: {e}", "33"))
+                
+                # Check database status to determine if we should emit confirmation event
+                # (We always check database status, but tool_result_confirmation can help confirm)
+                # Ensure UsecaseMetadata is imported
+                from models.usecase.usecase import UsecaseMetadata
+                
+                with get_db_context() as db:
+                    rec = db.query(UsecaseMetadata).filter(
+                        UsecaseMetadata.usecase_id == usecase_id,
+                        UsecaseMetadata.is_deleted == False,
+                    ).first()
+                    if rec:
+                        scenario_generation = rec.scenario_generation or "Not Started"
+                        test_case_generation = rec.test_case_generation or "Not Started"
+                        
+                        logger.info(_color(
+                            f"[TESTCASE-GEN-MODAL] Status check: scenario_generation={scenario_generation}, "
+                            f"test_case_generation={test_case_generation}, tool_result_confirmation={tool_result_confirmation}",
+                            "35"
+                        ))
+                        
+                        # Emit if tool result says confirmation_required (most reliable) OR database status matches
+                        should_emit_confirmation = tool_result_confirmation or (scenario_generation == "Completed" and test_case_generation == "Not Started")
+                        if should_emit_confirmation:
+                            logger.info(_color(f"[TESTCASE-GEN-MODAL] Emitting confirmation_required event", "35"))
+                            assistant_text = json.dumps({
+                                "system_event": "testcase_generation_confirmation_required",
+                                "usecase_id": str(usecase_id),
+                            })
+                        elif test_case_generation == "In Progress":
+                            logger.info(_color(f"[TESTCASE-GEN-MODAL] Generation in progress; emitting in_progress event", "35"))
+                            assistant_text = json.dumps({
+                                "system_event": "testcase_generation_in_progress",
+                                "usecase_id": str(usecase_id),
+                            })
+                        else:
+                            logger.info(_color(
+                                f"[TESTCASE-GEN-MODAL] Conditions not met for event emission; keeping agent response",
+                                "35"
+                            ))
+                    else:
+                        logger.warning(_color(f"[TESTCASE-GEN-MODAL] Usecase not found: {usecase_id}", "33"))
+            except Exception as e:
+                logger.warning(_color(f"[TESTCASE-GEN-MODAL] Event emission failed: {e}", "33"), exc_info=True)
         
         # Post-run: Check if user wants to see requirements but tool wasn't called
         user_text_lower_show_req = user_message.lower()
@@ -2493,6 +3400,76 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
                     logger.info(_color(f"[SHOW-SCEN-FALLBACK] Conditions not met: scenario_generation={scenario_generation}", "35"))
             except Exception as e:
                 logger.warning(_color(f"[SHOW-SCEN-FALLBACK] Fallback check failed: {e}", "33"), exc_info=True)
+        
+        # Post-run: Check if user wants to see test cases but tool wasn't called
+        user_text_lower_show_tc = user_message.lower()
+        show_testcases_keywords = [
+            "show test cases", "display test cases", "show me the test cases",
+            "view test cases", "show the test cases", "can i see the test cases",
+            "can you show the test cases", "can you show them",
+            "if test cases are done, can i see them", "if test cases are done, can you show them",
+            "i want to see the test cases", "i want to see them",
+            "show them", "show it", "let me see the test cases"
+        ]
+        wants_show_testcases = any(kw in user_text_lower_show_tc for kw in show_testcases_keywords) or \
+                               (("test case" in user_text_lower_show_tc or "testcase" in user_text_lower_show_tc) and ("show" in user_text_lower_show_tc or "see" in user_text_lower_show_tc or "view" in user_text_lower_show_tc or "display" in user_text_lower_show_tc))
+        
+        try:
+            show_tc_tool_called = any(
+                (tc.get("name") == "show_testcases") for tc in tracer.data.get("tool_calls", [])
+            )
+            logger.info(_color(f"[SHOW-TC-CHECK] Tool call detection: show_tc_tool_called={show_tc_tool_called}, wants_show_testcases={wants_show_testcases}, tool_calls_count={len(tracer.data.get('tool_calls', []))}", "35"))
+        except Exception as e:
+            show_tc_tool_called = False
+            logger.warning(_color(f"[SHOW-TC-CHECK] Error checking tool calls: {e}", "33"))
+        
+        # Fallback: If user asked to see test cases but tool wasn't called, check if we should call it
+        # Also check if agent's response suggests it tried to show test cases
+        agent_response_suggests_show_tc = "retrieved the test cases" in assistant_text.lower() or ("test case" in assistant_text.lower() or "testcase" in assistant_text.lower()) and ("display" in assistant_text.lower() or "shown" in assistant_text.lower() or "above" in assistant_text.lower())
+        
+        if not show_tc_tool_called and (wants_show_testcases or agent_response_suggests_show_tc):
+            logger.info(_color(f"[SHOW-TC-FALLBACK] Tool was not called but user requested to see test cases (user_message='{user_message[:100]}', agent_response_suggests={agent_response_suggests_show_tc}) - checking status", "35"))
+            try:
+                status = tool_get_usecase_status(usecase_id)
+                test_case_generation = status.get("test_case_generation") or "Not Started"
+                
+                logger.info(_color(f"[SHOW-TC-FALLBACK] Status check: test_case_generation={test_case_generation}", "35"))
+                
+                if test_case_generation in ("In Progress", "Completed"):
+                    logger.info(_color(f"[SHOW-TC-FALLBACK] Conditions met - calling show_testcases tool as fallback", "35"))
+                    tool_name = "show_testcases"
+                    tool_entry = None
+                    tool_start_time = None
+                    try:
+                        # Track tool call in tracer
+                        tool_entry = tracer.start_tool(tool_name, args_preview=f'{{"usecase_id": "{usecase_id}"}}')
+                        tool_start_time = time.time()
+                        logger.info(_color(f"[TOOL-START {tool_name}] usecase_id={usecase_id}", "34"))
+                        
+                        result = tool_show_testcases(usecase_id)
+                        duration_ms = int((time.time() - tool_start_time) * 1000)
+                        
+                        if result.get("status") == "success":
+                            tracer.finish_tool(tool_entry, True, result_preview=f"status=success usecase_id={usecase_id}", duration_ms=duration_ms)
+                            logger.info(_color(f"[TOOL-END {tool_name}] duration={duration_ms}ms", "34"))
+                            logger.info(_color(f"[SHOW-TC-FALLBACK] Successfully called show_testcases tool", "35"))
+                            # Update assistant_text to indicate test cases were retrieved
+                            assistant_text = "I've retrieved the test cases. They will be displayed above for you to review."
+                        else:
+                            error_msg = result.get('error', 'unknown_error')
+                            tracer.finish_tool(tool_entry, False, error=error_msg, duration_ms=duration_ms)
+                            logger.warning(_color(f"[TOOL-ERROR {tool_name}] {error_msg}", "34"))
+                            logger.warning(_color(f"[SHOW-TC-FALLBACK] show_testcases returned error: {error_msg}", "33"))
+                    except Exception as e:
+                        duration_ms = int((time.time() - tool_start_time) * 1000) if tool_start_time else 0
+                        if tool_entry:
+                            tracer.finish_tool(tool_entry, False, error=str(e), duration_ms=duration_ms)
+                        logger.warning(_color(f"[TOOL-ERROR {tool_name}] {e}", "34"))
+                        logger.warning(_color(f"[SHOW-TC-FALLBACK] Error calling show_testcases: {e}", "33"), exc_info=True)
+                else:
+                    logger.info(_color(f"[SHOW-TC-FALLBACK] Conditions not met: test_case_generation={test_case_generation}", "35"))
+            except Exception as e:
+                logger.warning(_color(f"[SHOW-TC-FALLBACK] Fallback check failed: {e}", "33"), exc_info=True)
         
         # Final debug: Log all tool calls before returning (should include fallback tools)
         try:

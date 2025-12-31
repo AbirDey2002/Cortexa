@@ -263,17 +263,17 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                         user_timestamp = entry.get("timestamp")
                         break
                 
-                # Collect ALL modal markers (requirements, scenarios, PDF) - preserve all types independently
+                # Collect ALL modal markers (requirements, scenarios, testcases, PDF) - preserve all types independently
                 for entry in current_db_history:
                     if isinstance(entry, dict) and "modal" in entry:
                         modal = entry.get("modal", {})
-                        modal_type = modal.get("type")  # "requirements", "scenarios", or None (for PDF)
+                        modal_type = modal.get("type")  # "requirements", "scenarios", "testcases", or None (for PDF)
                         modal_file_id = modal.get("file_id")  # For PDF markers
                         
-                        # For requirements and scenarios, always preserve the latest marker of each type
+                        # For requirements, scenarios, and testcases, always preserve the latest marker of each type
                         # For PDF markers, check if created during this turn
-                        if modal_type in ("requirements", "scenarios"):
-                            # Always include requirements/scenarios markers (they're managed independently by tools)
+                        if modal_type in ("requirements", "scenarios", "testcases"):
+                            # Always include requirements/scenarios/testcases markers (they're managed independently by tools)
                             all_modal_markers.append(entry)
                         elif modal_file_id:
                             # For PDF markers, check if created during this turn
@@ -305,8 +305,8 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                 for m in all_modal_markers:
                     if isinstance(m, dict) and "modal" in m:
                         modal = m.get("modal", {})
-                        # For requirements/scenarios, track by type
-                        if modal.get("type") in ("requirements", "scenarios"):
+                        # For requirements/scenarios/testcases, track by type
+                        if modal.get("type") in ("requirements", "scenarios", "testcases"):
                             seen_modal_keys.add(f"type:{modal.get('type')}")
                         # For PDF, track by file_id
                         elif modal.get("file_id"):
@@ -319,7 +319,7 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                         modal_type = modal.get("type")
                         modal_file_id = modal.get("file_id")
                         
-                        if modal_type in ("requirements", "scenarios"):
+                        if modal_type in ("requirements", "scenarios", "testcases"):
                             if f"type:{modal_type}" in seen_modal_keys:
                                 continue
                         elif modal_file_id:

@@ -13,9 +13,11 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { RequirementsGenerationConfirmModal } from "@/components/chat/RequirementsGenerationConfirmModal";
 import { ScenariosGenerationConfirmModal } from "@/components/chat/ScenariosGenerationConfirmModal";
+import { TestCasesGenerationConfirmModal } from "@/components/chat/TestCasesGenerationConfirmModal";
 import { PdfContentMessage } from "@/components/chat/PdfContentMessage";
 import { RequirementsMessage } from "@/components/chat/RequirementsMessage";
 import { ScenariosMessage } from "@/components/chat/ScenariosMessage";
+import { TestCasesMessage } from "@/components/chat/TestCasesMessage";
 
 function extractMainTextFromStored(raw: any): string {
   try {
@@ -102,12 +104,19 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
   const [reqGenConfirmed, setReqGenConfirmed] = useState<boolean>(false);
   const handledModalUsecasesRef = useRef<Record<string, boolean>>({});
   const [scenarioGenConfirmOpen, setScenarioGenConfirmOpen] = useState(false);
+  const [testCaseGenConfirmOpen, setTestCaseGenConfirmOpen] = useState(false);
   const [isScenarioGenBlocking, setIsScenarioGenBlocking] = useState(false);
   const scenarioGenPollTimerRef = useRef<number | null>(null);
   const [scenarioGenStatus, setScenarioGenStatus] = useState<"Not Started" | "In Progress" | "Completed" | "Failed" | "">("");
   const [lastScenarioGenCheckedUsecaseId, setLastScenarioGenCheckedUsecaseId] = useState<string | null>(null);
   const [scenarioGenConfirmed, setScenarioGenConfirmed] = useState<boolean>(false);
   const handledScenarioModalUsecasesRef = useRef<Record<string, boolean>>({});
+  const [isTestCaseGenBlocking, setIsTestCaseGenBlocking] = useState(false);
+  const testCaseGenPollTimerRef = useRef<number | null>(null);
+  const [testCaseGenStatus, setTestCaseGenStatus] = useState<"Not Started" | "In Progress" | "Completed" | "Failed" | "">("");
+  const [lastTestCaseGenCheckedUsecaseId, setLastTestCaseGenCheckedUsecaseId] = useState<string | null>(null);
+  const [testCaseGenConfirmed, setTestCaseGenConfirmed] = useState<boolean>(false);
+  const handledTestCasesModalUsecasesRef = useRef<Record<string, boolean>>({});
   const ocrBannerTimerRef = useRef<number | null>(null);
   const [pendingFiles, setPendingFiles] = useState<SelectedFile[]>([]);
   const [currentModel, setCurrentModel] = useState<string>(propCurrentModel || "gemini-2.5-flash-lite");
@@ -152,6 +161,30 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
     }>;
     timestamp: Date;
   }>>([]);
+  const [testCasesMessages, setTestCasesMessages] = useState<Array<{
+    testCases: Array<{
+      id: string;
+      display_id: number;
+      test_case: string;
+      description?: string;
+      flow?: string;
+      requirementId?: string;
+      scenarioId?: string;
+      preConditions?: string[];
+      testData?: string[];
+      testSteps?: string[];
+      expectedResults?: string[];
+      postConditions?: string[];
+      risk_analysis?: string;
+      requirement_category?: string;
+      lens?: string;
+      scenario_display_id?: number;
+      scenario_name?: string;
+      requirement_display_id?: number;
+      created_at?: string;
+    }>;
+    timestamp: Date;
+  }>>([]);
   const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
   // Removed files tray and processing modal state
   const [status, setStatus] = useState<string>("Completed");
@@ -183,6 +216,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
         setPdfContentMessages([]);
         setRequirementsMessages([]);
         setScenariosMessages([]);
+        setTestCasesMessages([]);
         setReqGenStatus("");
         setLastReqGenCheckedUsecaseId(null);
         setScenarioGenStatus("");
@@ -196,6 +230,10 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
         if (scenarioGenPollTimerRef.current) {
           window.clearInterval(scenarioGenPollTimerRef.current);
           scenarioGenPollTimerRef.current = null;
+        }
+        if (testCaseGenPollTimerRef.current) {
+          window.clearInterval(testCaseGenPollTimerRef.current);
+          testCaseGenPollTimerRef.current = null;
         }
         return;
       }
@@ -319,40 +357,67 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
             const jsonText = m ? m[1] : content;
             const obj = JSON.parse(jsonText);
             if (obj && obj.system_event === "requirement_generation_confirmation_required") {
-              // Only react to fresh latest assistant message for this usecase, and if not already handled/confirmed
+              // Always replace JSON with user-friendly message for display
+              shown = "I've requested requirement generation. A confirmation modal will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+              // Only trigger modal for fresh latest assistant message for this usecase, and if not already handled/confirmed
               const isLatest = idx === sortedHistory.length - 1;
               const alreadyHandled = !!handledModalUsecasesRef.current[usecaseId];
-              if (!isLatest || alreadyHandled || reqGenConfirmed) {
-                // ignore historical or already-handled events
-              } else {
+              if (isLatest && !alreadyHandled && !reqGenConfirmed) {
                 console.debug("system_event detected: requirement_generation_confirmation_required");
                 setReqGenConfirmOpen(true);
                 setIsReqGenBlocking(true);
                 setWaitingForResponse(false);
                 setIsLoading(false);
-                shown = "I've identified documents ready for requirement generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
               }
             } else if (obj && obj.system_event === "requirement_generation_in_progress") {
+              // Always replace JSON with user-friendly message for display
+              shown = "Requirement generation is in progress. You'll be notified when complete.";
               console.debug("system_event detected: requirement_generation_in_progress");
               setIsReqGenBlocking(true);
               setWaitingForResponse(false);
               setIsLoading(false);
               setReqGenStatus("In Progress");
             } else if (obj && obj.system_event === "scenario_generation_confirmation_required") {
-              // Only react to fresh latest assistant message for this usecase, and if not already handled/confirmed
+              // Always replace JSON with user-friendly message for display
+              shown = "I've requested scenario generation. A confirmation modal will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+              // Only trigger modal for fresh latest assistant message for this usecase, and if not already handled/confirmed
               const isLatest = idx === sortedHistory.length - 1;
               const alreadyHandled = !!handledScenarioModalUsecasesRef.current[usecaseId];
-              if (!isLatest || alreadyHandled || scenarioGenConfirmed) {
-                // ignore historical or already-handled events
-              } else {
+              if (isLatest && !alreadyHandled && !scenarioGenConfirmed) {
                 console.debug("system_event detected: scenario_generation_confirmation_required");
                 setScenarioGenConfirmOpen(true);
                 setIsScenarioGenBlocking(true);
                 setWaitingForResponse(false);
                 setIsLoading(false);
-                shown = "I've identified requirements ready for scenario generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
               }
+            } else if (obj && obj.system_event === "testcase_generation_confirmation_required") {
+              // Always replace JSON with user-friendly message for display
+              shown = "I've requested test case generation. A confirmation modal will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+              // Only trigger modal for fresh latest assistant message for this usecase, and if not already handled/confirmed
+              const isLatest = idx === sortedHistory.length - 1;
+              const alreadyHandled = !!handledTestCasesModalUsecasesRef.current[usecaseId];
+              console.log(`[TESTCASE-MODAL] Event detected: isLatest=${isLatest}, alreadyHandled=${alreadyHandled}, testCaseGenConfirmed=${testCaseGenConfirmed}, usecaseId=${usecaseId}`);
+              if (isLatest && !alreadyHandled && !testCaseGenConfirmed) {
+                console.log("[TESTCASE-MODAL] Opening confirmation modal");
+                console.debug("system_event detected: testcase_generation_confirmation_required");
+                setTestCaseGenConfirmOpen(true);
+                setIsTestCaseGenBlocking(true);
+                setWaitingForResponse(false);
+                setIsLoading(false);
+              } else {
+                console.log(`[TESTCASE-MODAL] Skipping event: isLatest=${isLatest}, alreadyHandled=${alreadyHandled}, testCaseGenConfirmed=${testCaseGenConfirmed}`);
+              }
+            } else if (obj && obj.system_event === "testcase_generation_in_progress") {
+              // Always replace JSON with user-friendly message for display
+              shown = "Test case generation is in progress. You'll be notified when complete.";
+              console.debug("system_event detected: testcase_generation_in_progress");
+              setIsTestCaseGenBlocking(true);
+              setWaitingForResponse(false);
+              setIsLoading(false);
+              setTestCaseGenStatus("In Progress");
             } else if (obj && obj.system_event === "scenario_generation_in_progress") {
+              // Always replace JSON with user-friendly message for display
+              shown = "Scenario generation is in progress. You'll be notified when complete.";
               console.debug("system_event detected: scenario_generation_in_progress");
               setIsScenarioGenBlocking(true);
               setWaitingForResponse(false);
@@ -379,12 +444,14 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
         const foundPdfMarkers = modalMarkers.some((m: any) => m.modal?.file_id);
         const foundRequirementsMarkers = modalMarkers.some((m: any) => m.modal?.type === "requirements");
         const foundScenariosMarkers = modalMarkers.some((m: any) => m.modal?.type === "scenarios");
+        const foundTestCasesMarkers = modalMarkers.some((m: any) => m.modal?.type === "testcases");
         
-        console.log(`[MODAL-MARKERS] Marker types found: PDFs=${foundPdfMarkers}, Requirements=${foundRequirementsMarkers}, Scenarios=${foundScenariosMarkers}`);
+        console.log(`[MODAL-MARKERS] Marker types found: PDFs=${foundPdfMarkers}, Requirements=${foundRequirementsMarkers}, Scenarios=${foundScenariosMarkers}, TestCases=${foundTestCasesMarkers}`);
         
         if (modalMarkers.length > 0) {
-          // Fetch PDF content and requirements for all markers - await completion before scrolling
-          await (async () => {
+          // Fetch PDF content and requirements for all markers - load asynchronously without blocking
+          // Don't await - let messages render immediately while PDF content loads in background
+          (async () => {
             const pdfContents: Array<{
               fileId: string;
               fileName: string;
@@ -418,11 +485,38 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               timestamp: Date;
             }> = [];
             
-            for (const markerEntry of modalMarkers) {
+            const testCasesContents: Array<{
+              testCases: Array<{
+                id: string;
+                display_id: number;
+                test_case: string;
+                description?: string;
+                flow?: string;
+                requirementId?: string;
+                scenarioId?: string;
+                preConditions?: string[];
+                testData?: string[];
+                testSteps?: string[];
+                expectedResults?: string[];
+                postConditions?: string[];
+                risk_analysis?: string;
+                requirement_category?: string;
+                lens?: string;
+                scenario_display_id?: number;
+                scenario_name?: string;
+                requirement_display_id?: number;
+                created_at?: string;
+              }>;
+              timestamp: Date;
+            }> = [];
+            
+            // Load modal content in parallel for better performance - use Promise.allSettled to handle errors gracefully
+            const loadPromises = modalMarkers.map(async (markerEntry) => {
               const modal = markerEntry.modal;
               if (modal && modal.file_id) {
                 // PDF modal
                 try {
+                  console.log(`[PDF-LOAD] Loading PDF content for file_id=${modal.file_id}`);
                   const fileContent = await apiGet<any>(`/files/file_contents/retrieval/${modal.file_id}`);
                   if (fileContent && fileContent.pages && fileContent.pages.length > 0) {
                     pdfContents.push({
@@ -431,9 +525,13 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                       pages: fileContent.pages,
                       timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
                     });
+                    console.log(`[PDF-LOAD] Successfully loaded PDF content for file_id=${modal.file_id}, pages=${fileContent.pages.length}`);
+                  } else {
+                    console.warn(`[PDF-LOAD] No pages found in fileContent for file_id=${modal.file_id}`);
                   }
                 } catch (error) {
-                  console.error("Error retrieving PDF content from [modal] marker:", error);
+                  console.error(`[PDF-LOAD] Error retrieving PDF content for file_id=${modal.file_id}:`, error);
+                  // Don't throw - continue loading other content
                 }
               } else if (modal && modal.type === "requirements" && modal.usecase_id) {
                 // Requirements modal
@@ -470,8 +568,29 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 } catch (error) {
                   console.error("Error retrieving scenarios from [modal] marker:", error);
                 }
+              } else if (modal && modal.type === "testcases" && modal.usecase_id) {
+                // Test cases modal
+                try {
+                  const testCasesData = await apiGet<any>(`/testcases/${modal.usecase_id}/list`);
+                  console.log(`[TESTCASES-LOAD] Loaded test cases for usecase ${modal.usecase_id}:`, testCasesData);
+                  if (testCasesData && testCasesData.test_cases && testCasesData.test_cases.length > 0) {
+                    testCasesContents.push({
+                      testCases: testCasesData.test_cases,
+                      timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
+                    });
+                    console.log(`[TESTCASES-LOAD] Added ${testCasesData.test_cases.length} test cases to testCasesContents`);
+                  } else {
+                    console.warn(`[TESTCASES-LOAD] No test cases found for usecase ${modal.usecase_id}`);
+                  }
+                } catch (error) {
+                  console.error("Error retrieving test cases from [modal] marker:", error);
+                }
               }
-            }
+            });
+            
+            // Wait for all loads to complete (but don't block message rendering - this runs in background)
+            // Use allSettled so errors in one load don't prevent others from completing
+            await Promise.allSettled(loadPromises);
             
             // Always update state for types we found markers for
             // When loading from chat history, we should load ALL markers found, not preserve existing state
@@ -501,8 +620,16 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               setScenariosMessages([]);
               console.log(`[MODAL-LOAD] No scenarios markers found, cleared scenarios state`);
             }
+            if (foundTestCasesMarkers) {
+              setTestCasesMessages(testCasesContents);
+              console.log(`[MODAL-LOAD] Set Test Cases messages: ${testCasesContents.length} items (found ${testCasesContents.length} entries)`);
+            } else {
+              // No test cases markers found - ensure state is cleared
+              setTestCasesMessages([]);
+              console.log(`[MODAL-LOAD] No test cases markers found, cleared test cases state`);
+            }
             
-            console.log(`[MODAL-LOAD] Final state after setting: PDFs=${pdfContents.length}, Requirements=${requirementsContents.length}, Scenarios=${scenariosContents.length}`);
+            console.log(`[MODAL-LOAD] Final state after setting: PDFs=${pdfContents.length}, Requirements=${requirementsContents.length}, Scenarios=${scenariosContents.length}, TestCases=${testCasesContents.length}`);
           })();
         } else {
           // No modal markers found - clear all (this is correct when switching to a usecase with no modals)
@@ -510,6 +637,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
           setPdfContentMessages([]);
           setRequirementsMessages([]);
           setScenariosMessages([]);
+          setTestCasesMessages([]);
         }
         
         // Wait for DOM to update after all state changes, then scroll to bottom
@@ -624,12 +752,38 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 timestamp: Date;
               }> = [];
               
+              const testCasesContents: Array<{
+                testCases: Array<{
+                  id: string;
+                  display_id: number;
+                  test_case: string;
+                  description?: string;
+                  flow?: string;
+                  requirementId?: string;
+                  scenarioId?: string;
+                  preConditions?: string[];
+                  testData?: string[];
+                  testSteps?: string[];
+                  expectedResults?: string[];
+                  postConditions?: string[];
+                  risk_analysis?: string;
+                  requirement_category?: string;
+                  lens?: string;
+                  scenario_display_id?: number;
+                  scenario_name?: string;
+                  requirement_display_id?: number;
+                  created_at?: string;
+                }>;
+                timestamp: Date;
+              }> = [];
+              
             // Track which types we found markers for BEFORE processing
             const foundPdfMarkers = modalMarkers.some((m: any) => m.modal?.file_id);
             const foundRequirementsMarkers = modalMarkers.some((m: any) => m.modal?.type === "requirements");
             const foundScenariosMarkers = modalMarkers.some((m: any) => m.modal?.type === "scenarios");
+            const foundTestCasesMarkers = modalMarkers.some((m: any) => m.modal?.type === "testcases");
             
-            console.log(`[MODAL-LOAD] Before processing - Marker types found: PDFs=${foundPdfMarkers}, Requirements=${foundRequirementsMarkers}, Scenarios=${foundScenariosMarkers}`);
+            console.log(`[MODAL-LOAD] Before processing - Marker types found: PDFs=${foundPdfMarkers}, Requirements=${foundRequirementsMarkers}, Scenarios=${foundScenariosMarkers}, TestCases=${foundTestCasesMarkers}`);
             console.log(`[MODAL-LOAD] Processing ${modalMarkers.length} markers...`);
             
             for (const markerEntry of modalMarkers) {
@@ -680,6 +834,23 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                   } catch (error) {
                     console.error("Error retrieving scenarios from [modal] marker during polling:", error);
                   }
+                } else if (modal && modal.type === "testcases" && modal.usecase_id) {
+                  // Test cases modal
+                  try {
+                    const testCasesData = await apiGet<any>(`/testcases/${modal.usecase_id}/list`);
+                    console.log(`[TESTCASES-POLL] Loaded test cases for usecase ${modal.usecase_id}:`, testCasesData);
+                    if (testCasesData && testCasesData.test_cases && testCasesData.test_cases.length > 0) {
+                      testCasesContents.push({
+                        testCases: testCasesData.test_cases,
+                        timestamp: new Date(markerEntry.timestamp || modal.timestamp || Date.now())
+                      });
+                      console.log(`[TESTCASES-POLL] Added ${testCasesData.test_cases.length} test cases to testCasesContents`);
+                    } else {
+                      console.warn(`[TESTCASES-POLL] No test cases found for usecase ${modal.usecase_id}`);
+                    }
+                  } catch (error) {
+                    console.error("Error retrieving test cases from [modal] marker during polling:", error);
+                  }
                 }
               }
               
@@ -698,8 +869,12 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 setScenariosMessages(scenariosContents);
                 console.log(`[MODAL-POLL] Set Scenarios messages: ${scenariosContents.length} items`);
               }
+              if (foundTestCasesMarkers) {
+                setTestCasesMessages(testCasesContents);
+                console.log(`[MODAL-POLL] Set Test Cases messages: ${testCasesContents.length} items`);
+              }
               
-              console.log(`[MODAL-POLL] Final state: PDFs=${pdfContents.length}, Requirements=${requirementsContents.length}, Scenarios=${scenariosContents.length}`);
+              console.log(`[MODAL-POLL] Final state: PDFs=${pdfContents.length}, Requirements=${requirementsContents.length}, Scenarios=${scenariosContents.length}, TestCases=${testCasesContents.length}`);
             }
             
             const mappedMessages = sortedHistory.map((entry, idx) => {
@@ -733,6 +908,9 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 const jsonText = m ? m[1] : content;
                 const obj = JSON.parse(jsonText);
                 if (obj && obj.system_event === "requirement_generation_confirmation_required") {
+                  // Always replace JSON with user-friendly message for display
+                  shown = "I've requested requirement generation. A confirmation modal will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+                  // Only trigger modal for fresh latest assistant message
                   const isLatest = idx === sortedHistory.length - 1;
                   const alreadyHandled = !!handledModalUsecasesRef.current[usecaseId!];
                   if (isLatest && !alreadyHandled && !reqGenConfirmed) {
@@ -742,15 +920,19 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     setWaitingForResponse(false);
                     setIsLoading(false);
                     setReqGenStatus("Not Started");
-                    shown = "I've identified documents ready for requirement generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
                   }
                 } else if (obj && obj.system_event === "requirement_generation_in_progress") {
+                  // Always replace JSON with user-friendly message for display
+                  shown = "Requirement generation is in progress. You'll be notified when complete.";
                   console.debug("system_event detected (poll loop): requirement_generation_in_progress");
                   setIsReqGenBlocking(true);
                   setWaitingForResponse(false);
                   setIsLoading(false);
                   setReqGenStatus("In Progress");
                 } else if (obj && obj.system_event === "scenario_generation_confirmation_required") {
+                  // Always replace JSON with user-friendly message for display
+                  shown = "I've requested scenario generation. A confirmation modal will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+                  // Only trigger modal for fresh latest assistant message
                   const isLatest = idx === sortedHistory.length - 1;
                   const alreadyHandled = !!handledScenarioModalUsecasesRef.current[usecaseId!];
                   if (isLatest && !alreadyHandled && !scenarioGenConfirmed) {
@@ -760,14 +942,41 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     setWaitingForResponse(false);
                     setIsLoading(false);
                     setScenarioGenStatus("Not Started");
-                    shown = "I've identified requirements ready for scenario generation. A confirmation dialog will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
                   }
                 } else if (obj && obj.system_event === "scenario_generation_in_progress") {
+                  // Always replace JSON with user-friendly message for display
+                  shown = "Scenario generation is in progress. You'll be notified when complete.";
                   console.debug("system_event detected (poll loop): scenario_generation_in_progress");
                   setIsScenarioGenBlocking(true);
                   setWaitingForResponse(false);
                   setIsLoading(false);
                   setScenarioGenStatus("In Progress");
+                } else if (obj && obj.system_event === "testcase_generation_confirmation_required") {
+                  // Always replace JSON with user-friendly message for display
+                  shown = "I've requested test case generation. A confirmation modal will appear. Click 'Yes' to start the background process. You'll be notified when complete.";
+                  // Only trigger modal for fresh latest assistant message
+                  const isLatest = idx === sortedHistory.length - 1;
+                  const alreadyHandled = !!handledTestCasesModalUsecasesRef.current[usecaseId!];
+                  console.log(`[TESTCASE-MODAL-POLL] Event detected: isLatest=${isLatest}, alreadyHandled=${alreadyHandled}, testCaseGenConfirmed=${testCaseGenConfirmed}, usecaseId=${usecaseId}`);
+                  if (isLatest && !alreadyHandled && !testCaseGenConfirmed) {
+                    console.log("[TESTCASE-MODAL-POLL] Opening confirmation modal");
+                    console.debug("system_event detected (poll loop): testcase_generation_confirmation_required");
+                    setTestCaseGenConfirmOpen(true);
+                    setIsTestCaseGenBlocking(true);
+                    setWaitingForResponse(false);
+                    setIsLoading(false);
+                    setTestCaseGenStatus("Not Started");
+                  } else {
+                    console.log(`[TESTCASE-MODAL-POLL] Skipping event: isLatest=${isLatest}, alreadyHandled=${alreadyHandled}, testCaseGenConfirmed=${testCaseGenConfirmed}`);
+                  }
+                } else if (obj && obj.system_event === "testcase_generation_in_progress") {
+                  // Always replace JSON with user-friendly message for display
+                  shown = "Test case generation is in progress. You'll be notified when complete.";
+                  console.debug("system_event detected (poll loop): testcase_generation_in_progress");
+                  setIsTestCaseGenBlocking(true);
+                  setWaitingForResponse(false);
+                  setIsLoading(false);
+                  setTestCaseGenStatus("In Progress");
                 } else if (obj && obj.user_answer) {
                   shown = obj.user_answer;
                 }
@@ -1080,6 +1289,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
             const sortedPdfs = [...pdfContentMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
             const sortedRequirements = [...requirementsMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
             const sortedScenarios = [...scenariosMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+            const sortedTestCases = [...testCasesMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
             
             sortedPdfs.forEach((pdf) => {
               let addedToGroup = false;
@@ -1103,7 +1313,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
 
             // Find which message is expanded
             const allItems: Array<{
-              type: 'message' | 'pdf-group' | 'requirements' | 'scenarios';
+              type: 'message' | 'pdf-group' | 'requirements' | 'scenarios' | 'testcases';
               timestamp: Date;
               data: any;
             }> = [
@@ -1126,6 +1336,11 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 type: 'scenarios' as const,
                 timestamp: scen.timestamp,
                 data: scen.scenarios
+              })),
+              ...sortedTestCases.map(tc => ({
+                type: 'testcases' as const,
+                timestamp: tc.timestamp,
+                data: tc.testCases
               }))
             ].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
@@ -1143,6 +1358,9 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               } else if (item.type === 'scenarios') {
                 const scenarios = item.data as Array<{ id: string }>;
                 messageId = `scenarios-${idx}-${scenarios.map(s => s.id).join('-')}`;
+              } else if (item.type === 'testcases') {
+                const testCases = item.data as Array<{ id: string }>;
+                messageId = `testcases-${idx}-${testCases.map(tc => tc.id).join('-')}`;
               }
               if (messageId === expandedMessageId) {
                 expandedItem = item;
@@ -1190,6 +1408,40 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     onMinimize={() => setExpandedMessageId(null)}
                   />
                 );
+              } else if (expandedItem.type === 'testcases') {
+                const testCases = expandedItem.data as Array<{
+                  id: string;
+                  display_id: number;
+                  test_case: string;
+                  description?: string;
+                  flow?: string;
+                  requirementId?: string;
+                  scenarioId?: string;
+                  preConditions?: string[];
+                  testData?: string[];
+                  testSteps?: string[];
+                  expectedResults?: string[];
+                  postConditions?: string[];
+                  risk_analysis?: string;
+                  requirement_category?: string;
+                  lens?: string;
+                  scenario_display_id?: number;
+                  scenario_name?: string;
+                  requirement_display_id?: number;
+                  created_at?: string;
+                }>;
+                console.log('[TESTCASES-EXPAND] ChatInterface rendering expanded test cases view:', { expandedMessageId, testCasesCount: testCases.length });
+                return (
+                  <TestCasesMessage
+                    key={expandedMessageId}
+                    testCases={testCases}
+                    usecaseId={usecaseId || ""}
+                    messageId={expandedMessageId}
+                    onExpand={setExpandedMessageId}
+                    isExpanded={true}
+                    onMinimize={() => setExpandedMessageId(null)}
+                  />
+                );
               }
             }
             return null;
@@ -1219,6 +1471,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 const sortedPdfs = [...pdfContentMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 const sortedRequirements = [...requirementsMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 const sortedScenarios = [...scenariosMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+                const sortedTestCases = [...testCasesMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 
                 sortedPdfs.forEach((pdf) => {
                   // Find a group where this PDF's timestamp is within 5 seconds of any PDF in the group
@@ -1243,11 +1496,11 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                   }
                 });
                 
-                // Create items for rendering: messages, grouped PDFs, requirements, and scenarios
+                // Create items for rendering: messages, grouped PDFs, requirements, scenarios, and test cases
                 const allItems: Array<{
-                  type: 'message' | 'pdf-group' | 'requirements' | 'scenarios';
+                  type: 'message' | 'pdf-group' | 'requirements' | 'scenarios' | 'testcases';
                   timestamp: Date;
-                  data: Message | Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }> | Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }> | Array<{ id: string; display_id: number; scenario_name: string; scenario_description: string; scenario_id?: string; requirement_id: string; requirement_display_id: number; flows?: any[]; created_at?: string }>;
+                  data: Message | Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }> | Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }> | Array<{ id: string; display_id: number; scenario_name: string; scenario_description: string; scenario_id?: string; requirement_id: string; requirement_display_id: number; flows?: any[]; created_at?: string }> | Array<{ id: string; display_id: number; test_case: string; description?: string; flow?: string; requirementId?: string; scenarioId?: string; preConditions?: string[]; testData?: string[]; testSteps?: string[]; expectedResults?: string[]; postConditions?: string[]; risk_analysis?: string; requirement_category?: string; lens?: string; scenario_display_id?: number; scenario_name?: string; requirement_display_id?: number; created_at?: string }>;
                 }> = [
                   ...messages.map(m => ({ type: 'message' as const, timestamp: m.timestamp, data: m })),
                   ...groupedPdfs.map(group => ({
@@ -1264,14 +1517,54 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     timestamp: req.timestamp,
                     data: req.requirements
                   })),
-                  ...sortedScenarios.map(scen => ({
-                    type: 'scenarios' as const,
-                    timestamp: scen.timestamp,
-                    data: scen.scenarios
-                  }))
-                ].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+              ...sortedScenarios.map(scen => ({
+                type: 'scenarios' as const,
+                timestamp: scen.timestamp,
+                data: scen.scenarios
+              })),
+              ...sortedTestCases.map(tc => ({
+                type: 'testcases' as const,
+                timestamp: tc.timestamp,
+                data: tc.testCases
+              }))
+            ].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 
-                return allItems.map((item, idx) => {
+                // If allItems is empty but we have messages, ensure messages are shown
+                if (allItems.length === 0 && messages.length > 0) {
+                  return messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
+                          message.type === "user"
+                            ? "bg-chat-user border border-border ml-auto"
+                            : "bg-chat-assistant border border-border mr-auto"
+                        }`}
+                      >
+                        <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
+                          {message.type === "assistant" ? (
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              rehypePlugins={[rehypeHighlight]}
+                            >
+                              {normalizeMarkdownText(message.content)}
+                            </ReactMarkdown>
+                          ) : (
+                            <>{message.content}</>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-2">
+                          {message.timestamp.toLocaleTimeString()}
+                        </div>
+                      </div>
+                    </div>
+                  ));
+                }
+                
+                try {
+                  return allItems.map((item, idx) => {
                   if (item.type === 'pdf-group') {
                     const pdfFiles = item.data as Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }>;
                     const messageId = `pdf-group-${idx}-${pdfFiles.map(f => f.fileId).join('-')}`;
@@ -1308,6 +1601,42 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                       <ScenariosMessage
                         key={messageId}
                         scenarios={scenarios}
+                        usecaseId={usecaseId || ""}
+                        messageId={messageId}
+                        onExpand={setExpandedMessageId}
+                        isExpanded={isExpanded}
+                        onMinimize={() => setExpandedMessageId(null)}
+                      />
+                    );
+                  } else if (item.type === 'testcases') {
+                    const testCases = item.data as Array<{
+                      id: string;
+                      display_id: number;
+                      test_case: string;
+                      description?: string;
+                      flow?: string;
+                      requirementId?: string;
+                      scenarioId?: string;
+                      preConditions?: string[];
+                      testData?: string[];
+                      testSteps?: string[];
+                      expectedResults?: string[];
+                      postConditions?: string[];
+                      risk_analysis?: string;
+                      requirement_category?: string;
+                      lens?: string;
+                      scenario_display_id?: number;
+                      scenario_name?: string;
+                      requirement_display_id?: number;
+                      created_at?: string;
+                    }>;
+                    const messageId = `testcases-${idx}-${testCases.map(tc => tc.id).join('-')}`;
+                    const isExpanded = expandedMessageId === messageId;
+                    console.log('[TESTCASES-EXPAND] ChatInterface rendering test cases:', { messageId, expandedMessageId, isExpanded, testCasesCount: testCases.length });
+                    return (
+                      <TestCasesMessage
+                        key={messageId}
+                        testCases={testCases}
                         usecaseId={usecaseId || ""}
                         messageId={messageId}
                         onExpand={setExpandedMessageId}
@@ -1371,6 +1700,40 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     );
                   }
                 });
+                } catch (error) {
+                  console.error("Error rendering chat items:", error);
+                  // Fallback: render just messages if there's an error
+                  return messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
+                          message.type === "user"
+                            ? "bg-chat-user border border-border ml-auto"
+                            : "bg-chat-assistant border border-border mr-auto"
+                        }`}
+                      >
+                        <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
+                          {message.type === "assistant" ? (
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              rehypePlugins={[rehypeHighlight]}
+                            >
+                              {normalizeMarkdownText(message.content)}
+                            </ReactMarkdown>
+                          ) : (
+                            <>{message.content}</>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-2">
+                          {message.timestamp.toLocaleTimeString()}
+                        </div>
+                      </div>
+                    </div>
+                  ));
+                }
               })()}
               
               {isLoading && (
@@ -1413,7 +1776,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               onSend={handleSend}
               onFileUpload={handleFileUpload}
               onKeyPress={handleKeyPress}
-              isDisabled={status === "In Progress" || isLoading || reqGenConfirmOpen || scenarioGenConfirmOpen}
+              isDisabled={status === "In Progress" || isLoading || reqGenConfirmOpen || scenarioGenConfirmOpen || testCaseGenConfirmOpen}
             />
             
             <input
@@ -1574,6 +1937,83 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
           setIsReqGenBlocking(false);
           setWaitingForResponse(false);
           setIsLoading(false);
+        }}
+      />
+
+      <TestCasesGenerationConfirmModal
+        open={testCaseGenConfirmOpen}
+        onConfirm={async () => {
+          if (!usecaseId) { setTestCaseGenConfirmOpen(false); return; }
+          // Optimistically prevent re-opening for this usecase in current session
+          handledTestCasesModalUsecasesRef.current[usecaseId] = true;
+          setTestCaseGenConfirmOpen(false);
+          setIsTestCaseGenBlocking(true);
+          setIsLoading(false);
+          setWaitingForResponse(false);
+          try {
+            await apiPost(`/testcases/${usecaseId}/generate`, {});
+            // Start polling test case generation status every 6s
+            if (testCaseGenPollTimerRef.current) {
+              window.clearInterval(testCaseGenPollTimerRef.current);
+            }
+            const startedAt = Date.now();
+            testCaseGenPollTimerRef.current = window.setInterval(async () => {
+              try {
+                const statusData = await apiGet<any>(`/testcases/${usecaseId}/status`);
+                if (statusData) {
+                  const newStatus = statusData.test_case_generation || "Not Started";
+                  setTestCaseGenStatus(newStatus);
+                  setLastTestCaseGenCheckedUsecaseId(usecaseId);
+                  if (newStatus === "Completed" || newStatus === "Failed") {
+                    if (testCaseGenPollTimerRef.current) {
+                      window.clearInterval(testCaseGenPollTimerRef.current);
+                      testCaseGenPollTimerRef.current = null;
+                    }
+                    setIsTestCaseGenBlocking(false);
+                    if (newStatus === "Completed") {
+                      toast({
+                        title: "Test case generation completed",
+                        description: `Generated ${statusData.total_inserted || 0} test cases successfully.`,
+                      });
+                    } else {
+                      toast({
+                        title: "Test case generation failed",
+                        description: "Test case generation encountered an error. Please try again.",
+                        variant: "destructive",
+                      });
+                    }
+                  }
+                }
+              } catch (error) {
+                console.error("Error polling test case generation status:", error);
+                // Stop polling on error
+                if (testCaseGenPollTimerRef.current) {
+                  window.clearInterval(testCaseGenPollTimerRef.current);
+                  testCaseGenPollTimerRef.current = null;
+                }
+                setIsTestCaseGenBlocking(false);
+              }
+            }, 6000);
+            setTestCaseGenStatus("In Progress");
+            toast({
+              title: "Test case generation started",
+              description: "Test cases are being generated in the background. You'll be notified when complete.",
+            });
+          } catch (error) {
+            console.error("Error starting test case generation:", error);
+            setIsTestCaseGenBlocking(false);
+            toast({
+              title: "Error",
+              description: "Failed to start test case generation. Please try again.",
+              variant: "destructive",
+            });
+          }
+        }}
+        onCancel={() => {
+          setTestCaseGenConfirmOpen(false);
+          setIsTestCaseGenBlocking(false);
+          setIsLoading(false);
+          setWaitingForResponse(false);
         }}
       />
 

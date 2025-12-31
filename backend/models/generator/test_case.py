@@ -6,6 +6,7 @@ from sqlalchemy import (
     String,
     Boolean,
     Text,
+    Integer,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID as pgUUID
@@ -27,6 +28,9 @@ class TestCase(Base):
         pgUUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=False
     )
     test_case_text = Column(Text, nullable=False)
+
+    # Display ID: unique per usecase, assigned based on creation time (ascending order, starting from 1)
+    display_id = Column(Integer, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, default=func.now(), nullable=False)
