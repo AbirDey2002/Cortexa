@@ -11,35 +11,34 @@ export const Hero = ({ onGetStarted }: HeroProps) => {
   };
 
   return (
-    <section className="relative min-h-screen flex items-center justify-center pt-20 overflow-hidden">
-      {/* Background Effects */}
-      <div className="absolute inset-0 bg-gradient-hero" />
-      <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/20 rounded-full blur-3xl animate-pulse-glow" />
-      <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-secondary/20 rounded-full blur-3xl" />
-      
-      {/* Grid Pattern */}
-      <div 
-        className="absolute inset-0 opacity-[0.02]"
-        style={{
-          backgroundImage: `linear-gradient(hsl(var(--foreground)) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--foreground)) 1px, transparent 1px)`,
-          backgroundSize: '60px 60px'
-        }}
-      />
-
+    <section className="relative min-h-screen flex items-center justify-center pt-20">
+      {/* Content only - background is fixed in Homepage */}
       <div className="container mx-auto px-4 relative z-10">
         <div className="max-w-4xl mx-auto text-center">
-          {/* Badge */}
-          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass mb-8 animate-fade-in">
-            <Sparkles className="w-4 h-4 text-primary" />
-            <span className="text-sm font-medium text-muted-foreground">
-              AI-Powered Testing Platform
-            </span>
+          {/* Logo and Badge */}
+          <div className="flex flex-col items-center gap-4 mb-8 animate-fade-in">
+            <div className="flex items-center gap-3">
+              <img 
+                src="/cortexa.png" 
+                alt="Cortexa Logo" 
+                className="h-12 w-12 sm:h-16 sm:w-16 object-contain"
+              />
+              <span className="text-2xl sm:text-3xl font-display font-bold text-foreground">
+                Cortexa
+              </span>
+            </div>
+            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass">
+              <Sparkles className="w-4 h-4 text-primary" />
+              <span className="text-sm font-medium text-muted-foreground">
+                AI-Powered Testing Platform
+              </span>
+            </div>
           </div>
 
           {/* Headline */}
           <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-display font-bold leading-tight mb-6 animate-fade-in-up" style={{ animationDelay: '0.1s' }}>
-            AI-Powered Testing{" "}
-            <span className="text-gradient">From A to Z</span>
+            Start Testing Smart{" "}
+            <span className="text-gradient">Today</span>
           </h1>
 
           {/* Subheadline */}

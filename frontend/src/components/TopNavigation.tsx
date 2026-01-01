@@ -32,7 +32,7 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
   const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const { state: sidebarState } = useSidebar();
   const isSidebarCollapsed = sidebarState === "collapsed";
-  const { logout, user } = useAuth();
+  const { logout, user, userId } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -122,22 +122,34 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56 bg-popover border-border">
-            <DropdownMenuLabel className="text-popover-foreground">
+            <DropdownMenuLabel 
+              className="text-popover-foreground cursor-pointer hover:bg-accent/50 rounded-sm p-2 -mx-2 -my-1 transition-colors"
+              onClick={() => userId && navigate(`/user/${userId}/profile`)}
+            >
               <div className="flex flex-col space-y-1">
                 <p className="text-sm font-medium">{user?.name || "User"}</p>
                 <p className="text-xs text-muted-foreground">{user?.email || ""}</p>
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="cursor-pointer hover:bg-accent hover:text-accent-foreground">
+            <DropdownMenuItem 
+              className="cursor-pointer hover:bg-accent hover:text-accent-foreground"
+              onClick={() => userId && navigate(`/user/${userId}/profile`)}
+            >
               <User className="mr-2 h-4 w-4" />
               <span>Profile</span>
             </DropdownMenuItem>
-            <DropdownMenuItem className="cursor-pointer hover:bg-accent hover:text-accent-foreground">
+            <DropdownMenuItem 
+              className="cursor-pointer hover:bg-accent hover:text-accent-foreground"
+              onClick={() => userId && navigate(`/user/${userId}/usage`)}
+            >
               <BarChart3 className="mr-2 h-4 w-4" />
               <span>Usage</span>
             </DropdownMenuItem>
-            <DropdownMenuItem className="cursor-pointer hover:bg-accent hover:text-accent-foreground">
+            <DropdownMenuItem 
+              className="cursor-pointer hover:bg-accent hover:text-accent-foreground"
+              onClick={() => userId && navigate(`/user/${userId}/settings`)}
+            >
               <Settings className="mr-2 h-4 w-4" />
               <span>Settings</span>
             </DropdownMenuItem>

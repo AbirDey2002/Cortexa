@@ -25,12 +25,10 @@ const securityFeatures = [
 
 export const Security = () => {
   return (
-    <section className="min-h-screen flex items-center relative overflow-hidden">
-      {/* Background Glow */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-primary/10 rounded-full blur-3xl" />
-      
+    <section className="relative scroll-mt-20 py-20">
+      {/* Content only - background is fixed in Homepage */}
       <div className="container mx-auto px-4 relative z-10 w-full">
-        <div className="grid lg:grid-cols-2 gap-12 items-center min-h-screen py-20">
+        <div className="grid lg:grid-cols-2 gap-12 items-center py-20">
           {/* Left Content */}
           <div>
             <span className="inline-flex items-center gap-2 px-4 py-1 rounded-full glass text-sm font-medium text-primary mb-6">

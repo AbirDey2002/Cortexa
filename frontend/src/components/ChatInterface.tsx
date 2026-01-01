@@ -1656,7 +1656,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                           className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
                             message.type === "user"
                               ? "bg-chat-user border border-border ml-auto"
-                              : "bg-chat-assistant border border-border mr-auto"
+                              : "bg-chat-assistant border border-primary/30 mr-auto shadow-sm"
                           }`}
                         >
                           {message.file && (

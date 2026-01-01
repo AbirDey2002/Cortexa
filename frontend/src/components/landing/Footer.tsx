@@ -1,48 +1,52 @@
 import { Link } from "react-router-dom";
-import { Twitter, Linkedin, Github, Youtube } from "lucide-react";
+import { Linkedin, Github, Instagram } from "lucide-react";
 
 const footerLinks = {
   Product: [
-    { label: "Features", href: "#features" },
-    { label: "Pricing", href: "#pricing" },
-    { label: "Integrations", href: "#" },
-    { label: "Changelog", href: "#" },
+    { label: "Features", href: "/#features" },
+    { label: "Pricing", href: "/pricing" },
+    { label: "Integrations", href: "/#features" },
+    { label: "Changelog", href: "/blog" },
   ],
   Company: [
-    { label: "About", href: "#" },
-    { label: "Blog", href: "#blog" },
-    { label: "Careers", href: "#" },
-    { label: "Contact", href: "#contact" },
+    { label: "About", href: "/#features" },
+    { label: "Blog", href: "/blog" },
+    { label: "Careers", href: "/contact" },
+    { label: "Contact", href: "/contact" },
   ],
   Resources: [
-    { label: "Documentation", href: "#docs" },
-    { label: "API Reference", href: "#" },
-    { label: "Guides", href: "#" },
-    { label: "Support", href: "#" },
+    { label: "Documentation", href: "/documentation" },
+    { label: "API Reference", href: "/documentation" },
+    { label: "Guides", href: "/documentation" },
+    { label: "Support", href: "/contact" },
   ],
   Legal: [
-    { label: "Privacy Policy", href: "#" },
-    { label: "Terms of Service", href: "#" },
-    { label: "Security", href: "#" },
-    { label: "GDPR", href: "#" },
+    { label: "Privacy Policy", href: "/contact" },
+    { label: "Terms of Service", href: "/contact" },
+    { label: "Security", href: "/#features" },
+    { label: "GDPR", href: "/contact" },
   ],
 };
 
 const socialLinks = [
-  { icon: Twitter, href: "#", label: "Twitter" },
-  { icon: Linkedin, href: "#", label: "LinkedIn" },
-  { icon: Github, href: "#", label: "GitHub" },
-  { icon: Youtube, href: "#", label: "YouTube" },
+  { icon: Linkedin, href: "https://www.linkedin.com/in/abir-dey-42ab19235/", label: "LinkedIn" },
+  { icon: Github, href: "https://github.com/AbirDey2002", label: "GitHub" },
+  { icon: Instagram, href: "https://www.instagram.com/a.abir_._/?hl=en", label: "Instagram" },
 ];
 
 export const Footer = () => {
   return (
-    <footer className="py-16 border-t border-border bg-muted/20">
+    <footer className="relative z-10 py-16 border-t border-border bg-background/95 backdrop-blur-sm">
       <div className="container mx-auto px-4">
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8 mb-12">
           {/* Logo & Description */}
           <div className="col-span-2">
             <Link to="/" className="flex items-center gap-2 mb-4">
+              <img 
+                src="/cortexa.png" 
+                alt="Cortexa Logo" 
+                className="h-8 w-8 object-contain"
+              />
               <span className="text-xl font-display font-bold text-foreground">
                 Cortexa
               </span>
@@ -74,12 +78,21 @@ export const Footer = () => {
               <ul className="space-y-2">
                 {links.map((link) => (
                   <li key={link.label}>
-                    <a
-                      href={link.href}
-                      className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      {link.label}
-                    </a>
+                    {link.href.startsWith('/') ? (
+                      <Link
+                        to={link.href}
+                        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {link.label}
+                      </Link>
+                    ) : (
+                      <a
+                        href={link.href}
+                        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {link.label}
+                      </a>
+                    )}
                   </li>
                 ))}
               </ul>

@@ -121,11 +121,13 @@ export function LoginModal({ open, onOpenChange, onSwitchToSignup, initialError 
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <div className="flex items-center justify-center mb-4">
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass">
-              <Sparkles className="w-5 h-5 text-primary" />
-              <span className="text-lg font-display font-bold text-foreground">Cortexa</span>
-            </div>
+          <div className="flex items-center justify-center gap-2 mb-4">
+            <img 
+              src="/cortexa.png" 
+              alt="Cortexa Logo" 
+              className="h-8 w-8 object-contain"
+            />
+            <span className="text-lg font-display font-bold text-foreground">Cortexa</span>
           </div>
           <DialogTitle className="text-2xl text-center">Welcome Back</DialogTitle>
           <DialogDescription className="text-center">

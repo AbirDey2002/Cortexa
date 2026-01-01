@@ -136,7 +136,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
             className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
               message.type === "user"
                 ? "bg-chat-user border border-border ml-auto"
-                : "bg-chat-assistant border border-border mr-auto"
+                : "bg-chat-assistant border border-primary/30 mr-auto shadow-sm"
             }`}
           >
             {message.file && (
@@ -273,7 +273,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
       
       {isLoading && (
         <div className="flex justify-start">
-          <div className="bg-chat-assistant border border-border rounded-xl p-4 mr-auto">
+          <div className="bg-chat-assistant border border-primary/30 rounded-xl p-4 mr-auto shadow-sm">
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" />
               <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{animationDelay: '0.1s'}} />

@@ -244,7 +244,7 @@ export function PdfContentMessage({
   // Collapsed view
   const collapsedView = (
     <div className="flex justify-start">
-      <div className="max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden bg-chat-assistant border border-border mr-auto flex flex-col">
+      <div className="max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden bg-chat-assistant border border-primary/30 mr-auto flex flex-col shadow-sm">
         {/* File-level navigation (top) - only show if multiple files */}
         {totalFiles > 1 && (
           <div className="flex items-center justify-between gap-2 mb-3 pb-3 border-b border-border">

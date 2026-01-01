@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
+import { Link } from "react-router-dom";
 import { Plus, MessageSquare, Settings, HelpCircle, Menu } from "lucide-react";
 import {
   SidebarContent,
@@ -14,7 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { apiGet, apiPost } from "@/lib/utils";
+import { useApi } from "@/lib/utils";
 
 type UsecaseListItem = {
   usecase_id: string;
@@ -37,12 +38,13 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
   const [selectedChat, setSelectedChat] = useState<string | null>(activeUsecaseId);
   const [usecases, setUsecases] = useState<UsecaseListItem[]>([]);
   const isCollapsed = state === "collapsed";
+  const { apiGet, apiPost } = useApi();
   
   // Reference to track if we need to apply animation
   const animatingItemRef = useRef<string | null>(null);
 
   // Function to fetch and update usecases
-  const fetchUsecases = async () => {
+  const fetchUsecases = useCallback(async () => {
     if (!userId) return;
     try {
       const usecases = await apiGet<UsecaseListItem[]>(`/frontend/usecases/list`);
@@ -72,12 +74,12 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
     } catch (e) {
       console.error("Error fetching usecases:", e);
     }
-  };
+  }, [userId, activeUsecaseId, apiGet]);
   
   // Initial fetch on mount and when userId/activeUsecaseId changes
   useEffect(() => {
     fetchUsecases();
-  }, [userId, activeUsecaseId]);
+  }, [fetchUsecases]);
   
   // Listen for chat updates to refresh the sidebar
   useEffect(() => {
@@ -269,8 +271,13 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
                 {isCollapsed ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <SidebarMenuButton className="hover:bg-sidebar-accent text-sidebar-foreground p-2 rounded-lg transition-colors justify-center">
-                        <Settings className="h-4 w-4" />
+                      <SidebarMenuButton 
+                        asChild
+                        className="hover:bg-sidebar-accent text-sidebar-foreground p-2 rounded-lg transition-colors justify-center"
+                      >
+                        <Link to={`/user/${userId}/settings`}>
+                          <Settings className="h-4 w-4" />
+                        </Link>
                       </SidebarMenuButton>
                     </TooltipTrigger>
                     <TooltipContent side="right">
@@ -278,9 +285,14 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
                     </TooltipContent>
                   </Tooltip>
                 ) : (
-                  <SidebarMenuButton className="hover:bg-sidebar-accent text-sidebar-foreground p-3 rounded-lg transition-colors">
-                    <Settings className="h-4 w-4" />
-                    <span className="ml-3">Settings</span>
+                  <SidebarMenuButton 
+                    asChild
+                    className="hover:bg-sidebar-accent text-sidebar-foreground p-3 rounded-lg transition-colors"
+                  >
+                    <Link to={`/user/${userId}/settings`}>
+                      <Settings className="h-4 w-4" />
+                      <span className="ml-3">Settings</span>
+                    </Link>
                   </SidebarMenuButton>
                 )}
               </SidebarMenuItem>
@@ -288,8 +300,13 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
                 {isCollapsed ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <SidebarMenuButton className="hover:bg-sidebar-accent text-sidebar-foreground p-2 rounded-lg transition-colors justify-center">
-                        <HelpCircle className="h-4 w-4" />
+                      <SidebarMenuButton 
+                        asChild
+                        className="hover:bg-sidebar-accent text-sidebar-foreground p-2 rounded-lg transition-colors justify-center"
+                      >
+                        <Link to={`/user/${userId}/help`}>
+                          <HelpCircle className="h-4 w-4" />
+                        </Link>
                       </SidebarMenuButton>
                     </TooltipTrigger>
                     <TooltipContent side="right">
@@ -297,9 +314,14 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
                     </TooltipContent>
                   </Tooltip>
                 ) : (
-                  <SidebarMenuButton className="hover:bg-sidebar-accent text-sidebar-foreground p-3 rounded-lg transition-colors">
-                    <HelpCircle className="h-4 w-4" />
-                    <span className="ml-3">Help</span>
+                  <SidebarMenuButton 
+                    asChild
+                    className="hover:bg-sidebar-accent text-sidebar-foreground p-3 rounded-lg transition-colors"
+                  >
+                    <Link to={`/user/${userId}/help`}>
+                      <HelpCircle className="h-4 w-4" />
+                      <span className="ml-3">Help</span>
+                    </Link>
                   </SidebarMenuButton>
                 )}
               </SidebarMenuItem>

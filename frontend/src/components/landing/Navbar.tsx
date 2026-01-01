@@ -8,12 +8,12 @@ import { LoginModal } from "@/components/auth/LoginModal";
 import { SignupModal } from "@/components/auth/SignupModal";
 
 const navLinks = [
-  { label: "Product", href: "#features" },
-  { label: "Features", href: "#how-it-works" },
-  { label: "Pricing", href: "#pricing" },
-  { label: "Documentation", href: "#docs" },
-  { label: "Blog", href: "#blog" },
-  { label: "Contact", href: "#contact" },
+  { label: "Product", href: "/#features" },
+  { label: "Features", href: "/#how-it-works" },
+  { label: "Pricing", href: "/pricing" },
+  { label: "Documentation", href: "/documentation" },
+  { label: "Blog", href: "/blog" },
+  { label: "Contact", href: "/contact" },
 ];
 
 export const Navbar = () => {
@@ -37,6 +37,11 @@ export const Navbar = () => {
         <div className="flex items-center justify-between h-16 md:h-20">
           {/* Logo */}
           <Link to="/" className="flex items-center gap-2 group">
+            <img 
+              src="/cortexa.png" 
+              alt="Cortexa Logo" 
+              className="h-8 w-8 object-contain"
+            />
             <span className="text-xl font-display font-bold text-foreground">
               Cortexa
             </span>
@@ -45,13 +50,23 @@ export const Navbar = () => {
           {/* Desktop Navigation */}
           <div className="hidden lg:flex items-center gap-8">
             {navLinks.map((link) => (
-              <a
-                key={link.label}
-                href={link.href}
-                className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors duration-200"
-              >
-                {link.label}
-              </a>
+              link.href.startsWith('/') ? (
+                <Link
+                  key={link.label}
+                  to={link.href}
+                  className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors duration-200"
+                >
+                  {link.label}
+                </Link>
+              ) : (
+                <a
+                  key={link.label}
+                  href={link.href}
+                  className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors duration-200"
+                >
+                  {link.label}
+                </a>
+              )
             ))}
           </div>
 

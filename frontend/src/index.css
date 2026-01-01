@@ -59,7 +59,7 @@
 
     /* Chat bubble colors */
     --chat-user: 220 13% 12%;
-    --chat-assistant: 220 13% 15%;
+    --chat-assistant: 180 40% 20%; /* Greenish-blue matching Cortexa theme */
   }
 
   .dark {
@@ -113,6 +113,17 @@
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  /* Smooth scrolling with offset for fixed navbar */
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 5rem; /* Offset for fixed navbar (h-20 = 5rem) */
+  }
+
+  /* Ensure sections with IDs have proper spacing */
+  section[id] {
+    scroll-margin-top: 5rem;
   }
 
   h1, h2, h3, h4, h5, h6 {

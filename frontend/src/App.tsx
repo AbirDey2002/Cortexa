@@ -10,6 +10,14 @@ import Homepage from "./pages/Homepage";
 import Callback from "./pages/Callback";
 import UserChatPage from "./pages/UserChatPage";
 import NotFound from "./pages/NotFound";
+import PricingPage from "./pages/PricingPage";
+import DocumentationPage from "./pages/DocumentationPage";
+import BlogPage from "./pages/BlogPage";
+import ContactPage from "./pages/ContactPage";
+import SettingsPage from "./pages/SettingsPage";
+import ProfilePage from "./pages/ProfilePage";
+import UsagePage from "./pages/UsagePage";
+import HelpPage from "./pages/HelpPage";
 
 const queryClient = new QueryClient();
 
@@ -37,6 +45,10 @@ const App = () => (
             <Routes>
               <Route path="/" element={<Homepage />} />
               <Route path="/callback" element={<Callback />} />
+              <Route path="/pricing" element={<PricingPage />} />
+              <Route path="/documentation" element={<DocumentationPage />} />
+              <Route path="/blog" element={<BlogPage />} />
+              <Route path="/contact" element={<ContactPage />} />
               <Route 
                 path="/user/:userId" 
                 element={
@@ -50,6 +62,38 @@ const App = () => (
                 element={
                   <ProtectedRoute>
                     <UserChatPage />
+                  </ProtectedRoute>
+                } 
+              />
+              <Route 
+                path="/user/:userId/settings" 
+                element={
+                  <ProtectedRoute>
+                    <SettingsPage />
+                  </ProtectedRoute>
+                } 
+              />
+              <Route 
+                path="/user/:userId/profile" 
+                element={
+                  <ProtectedRoute>
+                    <ProfilePage />
+                  </ProtectedRoute>
+                } 
+              />
+              <Route 
+                path="/user/:userId/usage" 
+                element={
+                  <ProtectedRoute>
+                    <UsagePage />
+                  </ProtectedRoute>
+                } 
+              />
+              <Route 
+                path="/user/:userId/help" 
+                element={
+                  <ProtectedRoute>
+                    <HelpPage />
                   </ProtectedRoute>
                 } 
               />

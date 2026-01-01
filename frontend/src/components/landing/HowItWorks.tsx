@@ -29,12 +29,10 @@ const steps = [
 
 export const HowItWorks = () => {
   return (
-    <section id="how-it-works" className="min-h-screen flex items-center relative">
-      {/* Background */}
-      <div className="absolute inset-0 bg-gradient-to-b from-background via-muted/10 to-background" />
-      
+    <section id="how-it-works" className="relative scroll-mt-20 py-20">
+      {/* Content only - background is fixed in Homepage */}
       <div className="container mx-auto px-4 relative z-10 w-full">
-        <div className="flex flex-col items-center justify-center min-h-screen py-20">
+        <div className="flex flex-col items-center justify-center py-20">
           {/* Section Header */}
           <div className="text-center max-w-3xl mx-auto mb-16">
             <span className="inline-block px-4 py-1 rounded-full glass text-sm font-medium text-primary mb-4">

@@ -66,7 +66,7 @@ export function RequirementsMessage({
   if (!requirements || requirements.length === 0) {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden bg-chat-assistant border border-border mr-auto">
+        <div className="max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden bg-chat-assistant border border-primary/30 mr-auto shadow-sm">
           <div className="text-sm text-muted-foreground">
             No requirements found for this usecase.
           </div>
@@ -78,7 +78,7 @@ export function RequirementsMessage({
   // Collapsed view
   const collapsedView = (
     <div className="flex justify-start w-full" style={{ width: '100%', maxWidth: '100%' }}>
-      <div className="w-full max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-x-hidden bg-chat-assistant border border-border mr-auto flex flex-col" style={{ width: '100%', maxWidth: '95%', boxSizing: 'border-box', overflow: 'hidden' }}>
+      <div className="w-full max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-x-hidden bg-chat-assistant border border-primary/30 mr-auto flex flex-col shadow-sm" style={{ width: '100%', maxWidth: '95%', boxSizing: 'border-box', overflow: 'hidden' }}>
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
           <div className="text-xs font-semibold text-muted-foreground">

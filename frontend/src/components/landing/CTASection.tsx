@@ -11,14 +11,10 @@ export const CTASection = ({ onSignUp }: CTASectionProps) => {
   };
 
   return (
-    <section className="min-h-screen flex items-center relative overflow-hidden">
-      {/* Background Effects */}
-      <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-background to-secondary/10" />
-      <div className="absolute top-0 left-1/4 w-96 h-96 bg-primary/20 rounded-full blur-3xl" />
-      <div className="absolute bottom-0 right-1/4 w-80 h-80 bg-secondary/20 rounded-full blur-3xl" />
-      
+    <section className="relative scroll-mt-20 py-20">
+      {/* Content only - background is fixed in Homepage */}
       <div className="container mx-auto px-4 relative z-10 w-full">
-        <div className="max-w-4xl mx-auto text-center flex flex-col items-center justify-center min-h-screen">
+        <div className="max-w-4xl mx-auto text-center flex flex-col items-center justify-center py-20">
           {/* Icon */}
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-primary shadow-glow mb-8 animate-float">
             <Sparkles className="w-8 h-8 text-primary-foreground" />

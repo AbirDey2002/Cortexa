@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { SidebarProvider, SidebarTrigger, SidebarInset, Sidebar } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { TopNavigation } from "@/components/TopNavigation";
 import { ChatInterface } from "@/components/ChatInterface";
-import { apiGet, apiPost } from "@/lib/utils";
+import { useApi } from "@/lib/utils";
 
 interface LayoutProps {
   children?: React.ReactNode;
@@ -15,6 +16,8 @@ interface LayoutProps {
 export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: LayoutProps) {
   const [currentModel, setCurrentModel] = useState("gemini-2.5-flash-lite");
   const [activeUsecaseId, setActiveUsecaseId] = useState<string | null>(null);
+  const { apiGet, apiPost } = useApi();
+  const navigate = useNavigate();
   
   // Load model from usecase when usecase changes
   useEffect(() => {
@@ -30,7 +33,7 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
         }
       })();
     }
-  }, [activeUsecaseId]);
+  }, [activeUsecaseId, apiGet]);
 
   // Load usecases and set active usecase if provided
   useEffect(() => {
@@ -56,7 +59,7 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
         console.error("Failed to get usecases:", e);
       }
     })();
-  }, [initialUsecaseId, onUsecaseChange, userId]);
+  }, [initialUsecaseId, onUsecaseChange, userId, apiGet]);
   
   // Listen for usecase creation events from ChatInterface
   useEffect(() => {
@@ -87,10 +90,14 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
             onSelectUsecase={(id) => {
               setActiveUsecaseId(id);
               if (onUsecaseChange) onUsecaseChange(id);
+              // Navigate to chat page when a chat is selected
+              navigate(`/user/${userId}/${id}`);
             }}
             onNewUsecase={(id) => {
               setActiveUsecaseId(id);
               if (onUsecaseChange) onUsecaseChange(id);
+              // Navigate to chat page when a new chat is created
+              navigate(`/user/${userId}/${id}`);
             }}
           />
         </Sidebar>
@@ -119,17 +126,23 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
           </div>
 
           <main className="flex-1 overflow-hidden">
-            {children || <ChatInterface userId={userId} usecaseId={activeUsecaseId} currentModel={currentModel} onModelChange={async (modelId: string) => {
-              setCurrentModel(modelId);
-              // Update usecase model if usecase is selected
-              if (activeUsecaseId) {
-                try {
-                  await apiPost(`/frontend/usecases/${activeUsecaseId}/model`, { model: modelId });
-                } catch (error) {
-                  console.error("Failed to update usecase model:", error);
+            {children ? (
+              <div className="h-full overflow-y-auto">
+                {children}
+              </div>
+            ) : (
+              <ChatInterface userId={userId} usecaseId={activeUsecaseId} currentModel={currentModel} onModelChange={async (modelId: string) => {
+                setCurrentModel(modelId);
+                // Update usecase model if usecase is selected
+                if (activeUsecaseId) {
+                  try {
+                    await apiPost(`/frontend/usecases/${activeUsecaseId}/model`, { model: modelId });
+                  } catch (error) {
+                    console.error("Failed to update usecase model:", error);
+                  }
                 }
-              }
-            }} />}
+              }} />
+            )}
           </main>
         </SidebarInset>
       </div>
