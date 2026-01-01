@@ -5,7 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { FileChip } from "@/components/FileChip";
 import { PreviewPanel } from "@/components/PreviewPanel";
-import { apiGet, apiPost } from "@/lib/utils";
+import { useApi } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { ChatInput, FloatingInputContainer, ChatTrace } from "@/components/chat";
 import ReactMarkdown from "react-markdown";
@@ -90,6 +90,7 @@ interface Props {
 }
 
 export function ChatInterface({ userId, usecaseId, currentModel: propCurrentModel, onModelChange }: Props) {
+  const { apiGet, apiPost } = useApi();
   const [messages, setMessages] = useState<Message[]>([]);
   const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
   const [inputValue, setInputValue] = useState("");
