@@ -30,6 +30,8 @@ from services.agent.agent_runner import run_agent_turn
 import google.generativeai as genai
 from core.env_config import get_env_variable
 from core.model_registry import is_valid_model, get_default_model
+from core.auth import verify_token
+from typing import Dict, Any
 
 # Hardcoded email for authentication
 DEFAULT_EMAIL = "abir.dey@intellectdesign.com"
@@ -365,7 +367,13 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
 
 
 @router.post("/{usecase_id}/gemini-chat")
-async def append_gemini_chat_message(usecase_id: uuid.UUID, payload: ChatMessage, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def append_gemini_chat_message(
+    usecase_id: uuid.UUID,
+    payload: ChatMessage,
+    background_tasks: BackgroundTasks,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """
     New endpoint for Gemini-powered chat conversations.
     This runs alongside the existing PF-powered chat endpoint.
@@ -500,7 +508,11 @@ async def append_gemini_chat_message(usecase_id: uuid.UUID, payload: ChatMessage
 
 
 @router.get("/{usecase_id}/gemini-chat")
-def get_gemini_chat_history(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_gemini_chat_history(
+    usecase_id: uuid.UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Get chat history for Gemini conversations (same as regular chat history)."""
     try:
         # Use raw SQL to avoid ORM issues
@@ -522,13 +534,20 @@ def get_gemini_chat_history(usecase_id: uuid.UUID, db: Session = Depends(get_db)
 
 
 @frontend_router.get("/{usecase_id}/gemini-chat")
-def get_gemini_chat_history_frontend(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_gemini_chat_history_frontend(
+    usecase_id: uuid.UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Frontend-specific endpoint to get Gemini chat history without ORM issues."""
     return get_gemini_chat_history(usecase_id, db)
 
 
 @router.get("/{usecase_id}/gemini-chat/stream")
-async def stream_gemini_chat(usecase_id: uuid.UUID):
+async def stream_gemini_chat(
+    usecase_id: uuid.UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token)
+):
     """Stream the latest Gemini response as it is generated."""
     uid = str(usecase_id)
     # If no response yet, stream empty generator until available
@@ -564,7 +583,11 @@ def gemini_health_check():
 
 # New endpoints for history management monitoring
 @router.get("/{usecase_id}/gemini-chat/statistics")
-def get_chat_statistics(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_chat_statistics(
+    usecase_id: uuid.UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Get detailed statistics about chat history and token usage."""
     try:
         record = db.query(UsecaseMetadata).filter(
@@ -594,7 +617,11 @@ def get_chat_statistics(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{usecase_id}/gemini-chat/summarization-status")
-def get_summarization_status(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_summarization_status(
+    usecase_id: uuid.UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Check if chat history needs summarization."""
     try:
         record = db.query(UsecaseMetadata).filter(
@@ -626,7 +653,11 @@ def get_summarization_status(usecase_id: uuid.UUID, db: Session = Depends(get_db
 
 
 @router.post("/{usecase_id}/gemini-chat/force-summarization")
-async def force_summarization(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
+async def force_summarization(
+    usecase_id: uuid.UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Force summarization of chat history (for testing/maintenance)."""
     try:
         record = db.query(UsecaseMetadata).filter(

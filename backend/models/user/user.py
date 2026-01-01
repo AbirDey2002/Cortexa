@@ -17,6 +17,7 @@ class User(Base):
     # The length of the string is passed directly to the String type
     name = Column(String(50), nullable=True)
     password = Column(String, nullable=True)
+    profile_image_url = Column(String, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, default=func.now(), nullable=False)

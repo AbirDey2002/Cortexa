@@ -5,21 +5,35 @@ import { useEffect } from "react";
 
 export default function UserChatPage() {
   const { userId: urlUserId, usecaseId } = useParams<{ userId: string; usecaseId?: string }>();
-  const { userId: authUserId, logout } = useAuth();
+  const { isAuthenticated, userId, isLoading } = useAuth();
   const navigate = useNavigate();
 
-  // If userId in URL doesn't match authenticated userId, redirect to homepage
+  // Redirect if not authenticated or no userId
   useEffect(() => {
-    if (!authUserId || (urlUserId && urlUserId !== authUserId)) {
-      logout();
-      navigate("/");
+    if (!isLoading) {
+      if (!isAuthenticated || !userId) {
+        navigate("/login", { replace: true });
+      }
     }
-  }, [authUserId, urlUserId, logout, navigate]);
+  }, [isAuthenticated, userId, isLoading, navigate]);
 
-  if (!authUserId || (urlUserId && urlUserId !== authUserId)) {
-    return null; // Will redirect
+  // Show loading state
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
   }
 
-  return <Layout initialUsecaseId={usecaseId} userId={authUserId} />;
+  // Don't render if not authenticated or no userId (will redirect)
+  if (!isAuthenticated || !userId) {
+    return null;
+  }
+
+  return <Layout initialUsecaseId={usecaseId} userId={userId} />;
 }
 

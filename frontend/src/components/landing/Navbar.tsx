@@ -4,8 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Menu, X } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
-
-const HARDCODED_USER_ID = "52588196-f538-42bf-adb8-df885ab0120c";
+import { LoginModal } from "@/components/auth/LoginModal";
+import { SignupModal } from "@/components/auth/SignupModal";
 
 const navLinks = [
   { label: "Product", href: "#features" },
@@ -18,12 +18,17 @@ const navLinks = [
 
 export const Navbar = () => {
   const [isOpen, setIsOpen] = useState(false);
-  const { login, isAuthenticated } = useAuth();
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [signupModalOpen, setSignupModalOpen] = useState(false);
+  const { isAuthenticated, userId } = useAuth();
   const navigate = useNavigate();
 
   const handleSignUp = () => {
-    login(HARDCODED_USER_ID);
-    navigate(`/user/${HARDCODED_USER_ID}`);
+    setSignupModalOpen(true);
+  };
+
+  const handleLogin = () => {
+    setLoginModalOpen(true);
   };
 
   return (
@@ -54,7 +59,11 @@ export const Navbar = () => {
           <div className="hidden lg:flex items-center gap-3">
             {!isAuthenticated ? (
               <>
-                <Button variant="ghost" className="text-muted-foreground hover:text-foreground">
+                <Button 
+                  variant="ghost" 
+                  onClick={handleLogin}
+                  className="text-muted-foreground hover:text-foreground"
+                >
                   Login
                 </Button>
                 <Button 
@@ -66,7 +75,7 @@ export const Navbar = () => {
               </>
             ) : (
               <Button 
-                onClick={() => navigate(`/user/${HARDCODED_USER_ID}`)}
+                onClick={() => userId && navigate(`/user/${userId}`)}
                 className="bg-gradient-primary hover:opacity-90 text-primary-foreground font-semibold shadow-glow transition-all duration-300 hover:shadow-lg"
               >
                 Go to Dashboard
@@ -101,7 +110,14 @@ export const Navbar = () => {
               <div className="flex flex-col gap-2 pt-4 border-t border-border">
                 {!isAuthenticated ? (
                   <>
-                    <Button variant="ghost" className="justify-start text-muted-foreground">
+                    <Button 
+                      variant="ghost" 
+                      onClick={() => {
+                        handleLogin();
+                        setIsOpen(false);
+                      }}
+                      className="justify-start text-muted-foreground"
+                    >
                       Login
                     </Button>
                     <Button 
@@ -117,8 +133,10 @@ export const Navbar = () => {
                 ) : (
                   <Button 
                     onClick={() => {
-                      navigate(`/user/${HARDCODED_USER_ID}`);
-                      setIsOpen(false);
+                      if (userId) {
+                        navigate(`/user/${userId}`);
+                        setIsOpen(false);
+                      }
                     }}
                     className="bg-gradient-primary text-primary-foreground font-semibold"
                   >
@@ -130,6 +148,18 @@ export const Navbar = () => {
           </div>
         )}
       </div>
+
+      {/* Auth Modals */}
+      <LoginModal
+        open={loginModalOpen}
+        onOpenChange={setLoginModalOpen}
+        onSwitchToSignup={() => setSignupModalOpen(true)}
+      />
+      <SignupModal
+        open={signupModalOpen}
+        onOpenChange={setSignupModalOpen}
+        onSwitchToLogin={() => setLoginModalOpen(true)}
+      />
     </nav>
   );
 };

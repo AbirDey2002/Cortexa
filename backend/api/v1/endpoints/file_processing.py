@@ -20,6 +20,8 @@ from uuid import uuid4, UUID
 from datetime import datetime, timezone
 from core.config import OCRServiceConfigs, settings
 from core.configs.pf_configs import PFImageToTextConfigs
+from core.auth import verify_token
+from typing import Dict, Any
 import logging
 from models.usecase.usecase import UsecaseMetadata
 
@@ -94,12 +96,15 @@ async def check_ocr_completion(usecase_id: int, db_session, max_retries=20, retr
 
 
 @router.post("/file_contents/upload", response_model=list[FileMetadataSchema])
-async def upload_file(background_tasks: BackgroundTasks,
-                      files: list[UploadFile] = File(...),
-                      email: str = Form(...),
-                      usecase_id: UUID = Form(...),
-                      start_ocr: bool = Form(False),
-                      db_session: Session = Depends(get_db)):
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    email: str = Form(...),
+    usecase_id: UUID = Form(...),
+    start_ocr: bool = Form(False),
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db_session: Session = Depends(get_db)
+):
     """
     Upload multiple files and store their metadata in the database.
     
@@ -277,6 +282,7 @@ async def upload_file(background_tasks: BackgroundTasks,
 @router.get("/files/{usecase_id}", response_model=list[FileMetadataSchema])
 async def get_files_by_usecase(
     usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -308,6 +314,7 @@ async def get_files_by_usecase(
 @router.get("/ocr/{usecase_id}/document-markdown")
 async def get_usecase_document_markdown(
     usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -359,6 +366,7 @@ async def get_usecase_document_markdown(
 @router.get("/files/{usecase_id}/status", response_model=list[FileWorkflowTrackerSchema])
 async def get_usecase_file_status(
     usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -401,6 +409,7 @@ async def get_usecase_file_status(
 @router.get("/ocr/{usecase_id}/results")
 async def get_ocr_results(
     usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -525,6 +534,7 @@ async def get_ocr_results(
 @router.get("/file_contents/retrieval/{file_id}")
 async def get_file_contents(
     file_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
     db_session: Session = Depends(get_db)
 ):
     """

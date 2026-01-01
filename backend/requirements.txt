@@ -74,3 +74,4 @@ yarl==1.20.1
 google-generativeai==0.8.3
 langchain==0.3.27
 langchain-core==0.3.78
+python-jose[cryptography]==3.3.0

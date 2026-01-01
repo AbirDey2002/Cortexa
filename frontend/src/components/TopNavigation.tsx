@@ -32,7 +32,7 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
   const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const { state: sidebarState } = useSidebar();
   const isSidebarCollapsed = sidebarState === "collapsed";
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -114,9 +114,9 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="relative h-7 w-7 sm:h-8 sm:w-8 md:h-9 md:w-9 rounded-full">
               <Avatar className="h-7 w-7 sm:h-8 sm:w-8 md:h-9 md:w-9">
-                <AvatarImage src="/placeholder-avatar.jpg" alt="Abir" />
+                <AvatarImage src={user?.picture} alt={user?.name || "User"} />
                 <AvatarFallback className="bg-primary text-primary-foreground text-xs sm:text-sm md:text-base">
-                  A
+                  {user?.name?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || "U"}
                 </AvatarFallback>
               </Avatar>
             </Button>
@@ -124,8 +124,8 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
           <DropdownMenuContent align="end" className="w-56 bg-popover border-border">
             <DropdownMenuLabel className="text-popover-foreground">
               <div className="flex flex-col space-y-1">
-                <p className="text-sm font-medium">Abir</p>
-                <p className="text-xs text-muted-foreground">abir@example.com</p>
+                <p className="text-sm font-medium">{user?.name || "User"}</p>
+                <p className="text-xs text-muted-foreground">{user?.email || ""}</p>
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />

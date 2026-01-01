@@ -1,50 +1,121 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { useAuth0, User } from "@auth0/auth0-react";
 
 interface AuthContextType {
   isAuthenticated: boolean;
   userId: string | null;
-  login: (userId: string) => void;
+  user: User | undefined;
+  login: () => void;
   logout: () => void;
+  getAccessTokenSilently: () => Promise<string>;
+  isLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const STORAGE_KEY = "cortexa_user_id";
+const SESSION_STORAGE_KEY = "cortexa_user_id";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const {
+    isAuthenticated: auth0IsAuthenticated,
+    user: auth0User,
+    loginWithRedirect,
+    logout: auth0Logout,
+    getAccessTokenSilently: auth0GetAccessTokenSilently,
+    isLoading: auth0IsLoading,
+  } = useAuth0();
+
   const [userId, setUserId] = useState<string | null>(() => {
     if (typeof window !== "undefined") {
-      return localStorage.getItem(STORAGE_KEY);
+      return sessionStorage.getItem(SESSION_STORAGE_KEY);
     }
     return null;
   });
 
-  const isAuthenticated = !!userId;
+  // Listen for storage events (changes from other tabs/windows)
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === SESSION_STORAGE_KEY) {
+        const newUserId = e.newValue;
+        console.log("%c[AUTH-CONTEXT] SessionStorage changed (storage event), updating userId:", "color: red", newUserId);
+        setUserId(newUserId);
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
 
-  const login = (userId: string) => {
-    localStorage.setItem(STORAGE_KEY, userId);
-    setUserId(userId);
+  // Listen for custom event (same-tab changes)
+  useEffect(() => {
+    const handleCustomStorageChange = (e: CustomEvent<string | null>) => {
+      console.log("%c[AUTH-CONTEXT] SessionStorage changed (custom event), updating userId:", "color: red", e.detail);
+      setUserId(e.detail);
+    };
+    
+    window.addEventListener('cortexa:userIdChanged', handleCustomStorageChange as EventListener);
+    return () => window.removeEventListener('cortexa:userIdChanged', handleCustomStorageChange as EventListener);
+  }, []);
+
+  // Check sessionStorage on focus (for same-tab changes)
+  useEffect(() => {
+    const checkSessionStorage = () => {
+      if (typeof window !== "undefined") {
+        const storedUserId = sessionStorage.getItem(SESSION_STORAGE_KEY);
+        if (storedUserId !== userId) {
+          console.log("%c[AUTH-CONTEXT] SessionStorage updated (focus check), syncing state:", "color: red", storedUserId);
+          setUserId(storedUserId);
+        }
+      }
+    };
+    
+    // Check on mount
+    checkSessionStorage();
+    
+    // Check when window gains focus
+    window.addEventListener('focus', checkSessionStorage);
+    return () => window.removeEventListener('focus', checkSessionStorage);
+  }, [userId]);
+
+  const login = () => {
+    loginWithRedirect({
+      authorizationParams: {
+        redirect_uri: window.location.origin + "/callback",
+      },
+    });
   };
 
   const logout = () => {
-    localStorage.removeItem(STORAGE_KEY);
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
     setUserId(null);
+    auth0Logout({
+      logoutParams: {
+        returnTo: window.location.origin,
+      },
+    });
   };
 
-  // Sync with localStorage changes (e.g., from other tabs)
-  useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY) {
-        setUserId(e.newValue);
-      }
-    };
-
-    window.addEventListener("storage", handleStorageChange);
-    return () => window.removeEventListener("storage", handleStorageChange);
-  }, []);
+  const getAccessTokenSilently = async (): Promise<string> => {
+    try {
+      return await auth0GetAccessTokenSilently();
+    } catch (error) {
+      console.error("Error getting access token:", error);
+      throw error;
+    }
+  };
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, userId, login, logout }}>
+    <AuthContext.Provider
+      value={{
+        isAuthenticated: auth0IsAuthenticated && !!userId,
+        userId,
+        user: auth0User,
+        login,
+        logout,
+        getAccessTokenSilently,
+        isLoading: auth0IsLoading,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -56,5 +127,17 @@ export function useAuth() {
     throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
+}
+
+// Helper function to set userId in sessionStorage (used by Callback page)
+export function setUserIdInSession(userId: string) {
+  if (typeof window !== "undefined") {
+    console.log("%c[AUTH-CONTEXT] Setting userId in sessionStorage:", "color: red", userId);
+    sessionStorage.setItem(SESSION_STORAGE_KEY, userId);
+    // Dispatch custom event to notify AuthContext immediately (same-tab)
+    const event = new CustomEvent('cortexa:userIdChanged', { detail: userId });
+    window.dispatchEvent(event);
+    console.log("%c[AUTH-CONTEXT] Custom event dispatched for userId change", "color: red");
+  }
 }
 

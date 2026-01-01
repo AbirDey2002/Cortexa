@@ -16,6 +16,8 @@ from services.requirements.requirements_service import (
 )
 from models.generator.requirement import Requirement
 from db.session import get_db_context
+from core.auth import verify_token
+from typing import Dict, Any
 
 
 router = APIRouter()
@@ -132,7 +134,12 @@ def _run_requirements_generation(usecase_id: UUID):
 
 
 @router.post("/{usecase_id}/generate")
-def generate_requirements(usecase_id: UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def generate_requirements(
+    usecase_id: UUID,
+    background_tasks: BackgroundTasks,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
@@ -161,7 +168,11 @@ def generate_requirements(usecase_id: UUID, background_tasks: BackgroundTasks, d
 
 
 @router.get("/{usecase_id}/list")
-def list_requirements(usecase_id: UUID, db: Session = Depends(get_db)):
+def list_requirements(
+    usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """
     Get all requirements for a usecase.
     Returns requirements in a format suitable for frontend display.
@@ -207,7 +218,12 @@ def list_requirements(usecase_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{usecase_id}/read/{display_id}")
-def read_requirement(usecase_id: UUID, display_id: int, db: Session = Depends(get_db)):
+def read_requirement(
+    usecase_id: UUID,
+    display_id: int,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """
     Read a specific requirement by display_id for agent analysis.
     Returns requirement_json as formatted text (similar to OCR combined_markdown).
@@ -318,7 +334,11 @@ def read_requirement(usecase_id: UUID, display_id: int, db: Session = Depends(ge
 
 
 @router.get("/{usecase_id}/status")
-def requirements_status(usecase_id: UUID, db: Session = Depends(get_db)):
+def requirements_status(
+    usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,

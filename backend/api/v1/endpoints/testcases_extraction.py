@@ -16,6 +16,8 @@ from models.generator.requirement import Requirement
 from models.generator.scenario import Scenario
 from models.generator.test_case import TestCase
 from db.session import get_db_context
+from core.auth import verify_token
+from typing import Dict, Any
 
 
 router = APIRouter()
@@ -185,7 +187,12 @@ def _run_testcases_generation(usecase_id: UUID):
 
 
 @router.post("/{usecase_id}/generate")
-def generate_testcases(usecase_id: UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def generate_testcases(
+    usecase_id: UUID,
+    background_tasks: BackgroundTasks,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Start test case generation for a usecase."""
     try:
         record = db.query(UsecaseMetadata).filter(
@@ -225,7 +232,11 @@ def generate_testcases(usecase_id: UUID, background_tasks: BackgroundTasks, db: 
 
 
 @router.get("/{usecase_id}/status")
-def testcases_status(usecase_id: UUID, db: Session = Depends(get_db)):
+def testcases_status(
+    usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Get test case generation status."""
     try:
         record = db.query(UsecaseMetadata).filter(
@@ -266,7 +277,11 @@ def testcases_status(usecase_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{usecase_id}/list")
-def list_testcases(usecase_id: UUID, db: Session = Depends(get_db)):
+def list_testcases(
+    usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """
     Get all test cases for a usecase.
     Returns test cases in a format suitable for frontend display.
@@ -339,7 +354,12 @@ def list_testcases(usecase_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{usecase_id}/read/{display_id}")
-def read_testcase(usecase_id: UUID, display_id: int, db: Session = Depends(get_db)):
+def read_testcase(
+    usecase_id: UUID,
+    display_id: int,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """
     Read a specific test case by display_id for agent analysis.
     Returns test_case_text as formatted text (similar to OCR combined_markdown).

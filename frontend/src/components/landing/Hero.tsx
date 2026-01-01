@@ -1,17 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Play, Sparkles, Shield, Zap } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
-import { useNavigate } from "react-router-dom";
 
-const HARDCODED_USER_ID = "52588196-f538-42bf-adb8-df885ab0120c";
+interface HeroProps {
+  onGetStarted: () => void;
+}
 
-export const Hero = () => {
-  const { login } = useAuth();
-  const navigate = useNavigate();
-
+export const Hero = ({ onGetStarted }: HeroProps) => {
   const handleGetStarted = () => {
-    login(HARDCODED_USER_ID);
-    navigate(`/user/${HARDCODED_USER_ID}`);
+    onGetStarted();
   };
 
   return (

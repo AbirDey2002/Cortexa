@@ -1,5 +1,7 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
+import { useAuth } from "@/contexts/AuthContext";
+import { useCallback } from "react";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -7,13 +9,21 @@ export function cn(...inputs: ClassValue[]) {
 
 export const API_BASE_URL = (import.meta as any).env?.VITE_BACKEND_URL || "http://localhost:8000";
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`);
+// Base API functions (without auth - for public endpoints or when token is passed manually)
+export async function apiGetBase<T>(path: string, headers?: Record<string, string>): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    headers: headers || {},
+  });
+  
   if (!res.ok) throw new Error(`GET ${path} failed`);
   return res.json();
 }
 
-export async function apiPost<T>(path: string, body?: any, headers?: Record<string, string>): Promise<T> {
+export async function apiPostBase<T>(
+  path: string,
+  body?: any,
+  headers?: Record<string, string>
+): Promise<T> {
   const isFormData = body instanceof FormData;
   
   const config: RequestInit = {
@@ -40,4 +50,133 @@ export async function apiPost<T>(path: string, body?: any, headers?: Record<stri
   const res = await fetch(`${API_BASE_URL}${path}`, config);
   if (!res.ok) throw new Error(`POST ${path} failed`);
   return res.json();
+}
+
+// Hook for authenticated API calls
+export function useApi() {
+  const { getAccessTokenSilently, isAuthenticated } = useAuth();
+
+  const apiGet = useCallback(async <T,>(path: string): Promise<T> => {
+    const headers: Record<string, string> = {};
+    
+    // Add JWT token if authenticated
+    if (isAuthenticated) {
+      try {
+        const token = await getAccessTokenSilently();
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+      } catch (error) {
+        console.error("Error getting access token:", error);
+      }
+    }
+
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      headers,
+    });
+    
+    if (!res.ok) {
+      // Handle 401 by attempting token refresh
+      if (res.status === 401 && isAuthenticated) {
+        try {
+          const token = await getAccessTokenSilently();
+          if (token) {
+            // Retry with new token
+            const retryRes = await fetch(`${API_BASE_URL}${path}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!retryRes.ok) throw new Error(`GET ${path} failed`);
+            return retryRes.json();
+          }
+        } catch (error) {
+          console.error("Error refreshing token:", error);
+        }
+      }
+      throw new Error(`GET ${path} failed`);
+    }
+    
+    return res.json();
+  }, [isAuthenticated, getAccessTokenSilently]);
+
+  const apiPost = useCallback(async <T,>(
+    path: string,
+    body?: any,
+    extraHeaders?: Record<string, string>
+  ): Promise<T> => {
+    const isFormData = body instanceof FormData;
+    
+    const config: RequestInit = {
+      method: 'POST',
+      body: isFormData ? body : (body ? JSON.stringify(body) : undefined),
+    };
+
+    // Build headers object
+    const requestHeaders: Record<string, string> = { ...extraHeaders };
+
+    // Add JWT token if authenticated
+    if (isAuthenticated) {
+      try {
+        const token = await getAccessTokenSilently();
+        if (token) {
+          requestHeaders.Authorization = `Bearer ${token}`;
+        }
+      } catch (error) {
+        console.error("Error getting access token:", error);
+      }
+    }
+
+    // Set headers if not FormData (FormData sets its own Content-Type with boundary)
+    if (!isFormData) {
+      config.headers = {
+        'Content-Type': 'application/json',
+        ...requestHeaders
+      };
+    } else if (Object.keys(requestHeaders).length > 0) {
+      // For FormData, only add non-Content-Type headers
+      const nonContentTypeHeaders = Object.fromEntries(
+        Object.entries(requestHeaders).filter(([key]) => key.toLowerCase() !== 'content-type')
+      );
+      if (Object.keys(nonContentTypeHeaders).length > 0) {
+        config.headers = nonContentTypeHeaders;
+      }
+    }
+
+    const res = await fetch(`${API_BASE_URL}${path}`, config);
+    
+    if (!res.ok) {
+      // Handle 401 by attempting token refresh
+      if (res.status === 401 && isAuthenticated) {
+        try {
+          const token = await getAccessTokenSilently();
+          if (token) {
+            // Retry with new token
+            const retryConfig = { ...config };
+            if (retryConfig.headers) {
+              (retryConfig.headers as Record<string, string>).Authorization = `Bearer ${token}`;
+            }
+            const retryRes = await fetch(`${API_BASE_URL}${path}`, retryConfig);
+            if (!retryRes.ok) throw new Error(`POST ${path} failed`);
+            return retryRes.json();
+          }
+        } catch (error) {
+          console.error("Error refreshing token:", error);
+        }
+      }
+      throw new Error(`POST ${path} failed`);
+    }
+    
+    return res.json();
+  }, [isAuthenticated, getAccessTokenSilently]);
+
+  return { apiGet, apiPost };
+}
+
+// Legacy exports for backward compatibility (will be deprecated)
+// These don't include auth tokens - use useApi hook instead
+export async function apiGet<T>(path: string): Promise<T> {
+  return apiGetBase<T>(path);
+}
+
+export async function apiPost<T>(path: string, body?: any, headers?: Record<string, string>): Promise<T> {
+  return apiPostBase<T>(path, body, headers);
 }

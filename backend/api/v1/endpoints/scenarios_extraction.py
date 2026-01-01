@@ -14,6 +14,8 @@ from services.scenarios.scenarios_service import (
 from models.generator.requirement import Requirement
 from models.generator.scenario import Scenario
 from db.session import get_db_context
+from core.auth import verify_token
+from typing import Dict, Any
 
 
 router = APIRouter()
@@ -162,7 +164,12 @@ def _run_scenarios_generation(usecase_id: UUID):
 
 
 @router.post("/{usecase_id}/generate")
-def generate_scenarios(usecase_id: UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def generate_scenarios(
+    usecase_id: UUID,
+    background_tasks: BackgroundTasks,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
@@ -201,7 +208,11 @@ def generate_scenarios(usecase_id: UUID, background_tasks: BackgroundTasks, db: 
 
 
 @router.get("/{usecase_id}/status")
-def scenarios_status(usecase_id: UUID, db: Session = Depends(get_db)):
+def scenarios_status(
+    usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
@@ -241,7 +252,11 @@ def scenarios_status(usecase_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{usecase_id}/list")
-def list_scenarios(usecase_id: UUID, db: Session = Depends(get_db)):
+def list_scenarios(
+    usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """
     Get all scenarios for a usecase.
     Returns scenarios grouped by requirement.
@@ -302,7 +317,11 @@ def list_scenarios(usecase_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{usecase_id}/list-flat")
-def list_scenarios_flat(usecase_id: UUID, db: Session = Depends(get_db)):
+def list_scenarios_flat(
+    usecase_id: UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """
     Get all scenarios for a usecase as a flat list.
     Returns scenarios in a format suitable for frontend display.
@@ -364,7 +383,12 @@ def list_scenarios_flat(usecase_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{usecase_id}/read/{display_id}")
-def read_scenario(usecase_id: UUID, display_id: int, db: Session = Depends(get_db)):
+def read_scenario(
+    usecase_id: UUID,
+    display_id: int,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """
     Read a specific scenario by display_id for agent analysis.
     Returns scenario_text as formatted text (similar to OCR combined_markdown).

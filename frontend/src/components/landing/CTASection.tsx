@@ -1,17 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Sparkles } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
-import { useNavigate } from "react-router-dom";
 
-const HARDCODED_USER_ID = "52588196-f538-42bf-adb8-df885ab0120c";
+interface CTASectionProps {
+  onSignUp: () => void;
+}
 
-export const CTASection = () => {
-  const { login } = useAuth();
-  const navigate = useNavigate();
-
+export const CTASection = ({ onSignUp }: CTASectionProps) => {
   const handleSignUp = () => {
-    login(HARDCODED_USER_ID);
-    navigate(`/user/${HARDCODED_USER_ID}`);
+    onSignUp();
   };
 
   return (
