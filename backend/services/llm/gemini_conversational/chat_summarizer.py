@@ -232,6 +232,43 @@ def update_chat_history_with_summary(
     return updated_history
 
 
+def update_chat_history_with_summary_by_index(
+    chat_history: List[Dict[str, Any]],
+    summary: str,
+    start_index: int,
+    end_index: int
+) -> List[Dict[str, Any]]:
+    """
+    Update chat history by replacing messages in a specific index range with a summary marker.
+    Used for count-based summarization where we replace the last N messages.
+    
+    Args:
+        chat_history (List[Dict]): Original chat history (newest first)
+        summary (str): Generated summary
+        start_index (int): Start index of messages to replace (inclusive)
+        end_index (int): End index of messages to replace (exclusive)
+        
+    Returns:
+        List[Dict]: Updated chat history with summary marker replacing messages[start_index:end_index]
+    """
+    # Keep messages before start_index
+    updated_history = chat_history[:start_index]
+    
+    # Create summary marker with the summary content
+    # Include summary in the marker for context
+    marker = create_summary_marker(start_index)
+    marker["summary"] = summary  # Store the summary in the marker
+    marker["summarized_count"] = end_index - start_index  # Number of messages summarized
+    
+    # Add summary marker
+    updated_history.append(marker)
+    
+    logger.info(f"Updated chat history: kept {len(updated_history) - 1} recent messages, "
+                f"replaced {end_index - start_index} messages (indices {start_index}-{end_index-1}) with summary")
+    
+    return updated_history
+
+
 def get_context_for_llm(
     chat_history: List[Dict[str, Any]],
     chat_summary: str = None
@@ -241,24 +278,34 @@ def get_context_for_llm(
     
     Args:
         chat_history (List[Dict]): Recent chat history (newest first)
-        chat_summary (str): Existing summary
+        chat_summary (str): Existing summary (may also be in summary marker)
         
     Returns:
         str: Formatted context for LLM
     """
     context_parts = []
     
+    # Find if there's a summary marker with embedded summary
+    marker_index = find_existing_summary_marker(chat_history)
+    marker_summary = None
+    
+    if marker_index is not None:
+        marker = chat_history[marker_index]
+        # Check if summary is stored in the marker (count-based summarization)
+        if isinstance(marker, dict) and "summary" in marker:
+            marker_summary = marker.get("summary")
+    
+    # Use marker summary if available, otherwise use chat_summary parameter
+    summary_to_use = marker_summary or chat_summary
+    
     # Add summary if available
-    if chat_summary:
+    if summary_to_use:
         context_parts.append("=== CONVERSATION SUMMARY ===")
-        context_parts.append(chat_summary)
+        context_parts.append(summary_to_use)
         context_parts.append("")
     
     # Add recent chat history (reverse to get chronological order)
     if chat_history:
-        # Find if there's a summary marker
-        marker_index = find_existing_summary_marker(chat_history)
-        
         # Get messages after the marker (or all if no marker)
         recent_messages = chat_history[:marker_index] if marker_index is not None else chat_history
         

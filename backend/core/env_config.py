@@ -68,15 +68,6 @@ def get_auth0_config() -> dict:
         "AUTH0_M2M_CLIENT_SECRET": os.getenv("AUTH0_M2M_CLIENT_SECRET", ""),
     }
     
-    # Log config values (mask secret)
-    logger.error("\033[91m[ENV-CONFIG] Auth0 Configuration:\033[0m")
-    logger.error(f"\033[91m[ENV-CONFIG] AUTH0_DOMAIN: {config['AUTH0_DOMAIN'] or 'NOT SET'}\033[0m")
-    logger.error(f"\033[91m[ENV-CONFIG] AUTH0_CLIENT_ID: {config['AUTH0_CLIENT_ID'] or 'NOT SET'}\033[0m")
-    logger.error(f"\033[91m[ENV-CONFIG] AUTH0_CLIENT_SECRET: {'SET' if config['AUTH0_CLIENT_SECRET'] else 'NOT SET'} (length: {len(config['AUTH0_CLIENT_SECRET']) if config['AUTH0_CLIENT_SECRET'] else 0})\033[0m")
-    logger.error(f"\033[91m[ENV-CONFIG] AUTH0_AUDIENCE: {config['AUTH0_AUDIENCE'] or 'NOT SET'}\033[0m")
-    logger.error(f"\033[91m[ENV-CONFIG] AUTH0_M2M_CLIENT_ID: {config['AUTH0_M2M_CLIENT_ID'] or 'NOT SET (will use AUTH0_CLIENT_ID)'}\033[0m")
-    logger.error(f"\033[91m[ENV-CONFIG] AUTH0_M2M_CLIENT_SECRET: {'SET' if config['AUTH0_M2M_CLIENT_SECRET'] else 'NOT SET (will use AUTH0_CLIENT_SECRET)'} (length: {len(config['AUTH0_M2M_CLIENT_SECRET']) if config['AUTH0_M2M_CLIENT_SECRET'] else 0})\033[0m")
-    
     return config
 
 

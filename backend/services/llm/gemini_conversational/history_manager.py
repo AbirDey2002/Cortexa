@@ -29,6 +29,60 @@ from .chat_summarizer import (
 
 logger = logging.getLogger(__name__)
 
+# Configuration constants for count-based summarization
+COUNT_SUMMARIZATION_THRESHOLD = 60  # When to trigger summarization
+COUNT_SUMMARIZATION_WINDOW = 10     # How many messages to summarize
+COUNT_KEEP_RECENT = 50              # How many messages to keep after summarization
+
+
+def should_summarize_by_count(chat_history: List[Dict[str, Any]], threshold: int = COUNT_SUMMARIZATION_THRESHOLD) -> bool:
+    """
+    Check if chat history should be summarized based on message count.
+    
+    Args:
+        chat_history (List[Dict]): Current chat history (newest first)
+        threshold (int): Message count threshold (default: 60)
+        
+    Returns:
+        bool: True if count >= threshold
+    """
+    # Count all entries including summary markers, modal markers, etc.
+    count = len(chat_history)
+    return count >= threshold
+
+
+def find_last_n_messages_for_summarization(
+    chat_history: List[Dict[str, Any]], 
+    n: int = COUNT_SUMMARIZATION_WINDOW
+) -> Tuple[int, List[Dict[str, Any]]]:
+    """
+    Find the last N messages in a newest-first list for summarization.
+    
+    In a newest-first list, the "last N" are the oldest messages (indices len-n to len-1).
+    
+    Args:
+        chat_history (List[Dict]): Chat history (newest first)
+        n (int): Number of messages to find (default: 10)
+        
+    Returns:
+        Tuple[int, List[Dict]]: 
+            - Start index where messages begin
+            - List of messages to summarize (oldest first for chronological order)
+    """
+    if not chat_history or len(chat_history) < n:
+        # Not enough messages
+        return 0, []
+    
+    # In newest-first list, last N messages are at indices [len-n:len]
+    # These are the oldest messages
+    start_index = len(chat_history) - n
+    messages_to_summarize = chat_history[start_index:]
+    
+    # Reverse to get chronological order (oldest first) for summarization
+    messages_chronological = list(reversed(messages_to_summarize))
+    
+    return start_index, messages_chronological
+
 
 class ChatHistoryManager:
     """
@@ -57,6 +111,8 @@ class ChatHistoryManager:
         """
         Process chat history, performing summarization if needed.
         
+        Priority: Count-based summarization first, then token-based as fallback.
+        
         Args:
             usecase_id (UUID): Usecase identifier
             chat_history (List[Dict]): Current chat history (newest first)
@@ -70,16 +126,36 @@ class ChatHistoryManager:
                 - Whether summarization was performed
         """
         try:
+            # First check count-based summarization (new logic)
+            current_count = len(chat_history)
+            logger.debug(f"Checking summarization for usecase {usecase_id}: message count={current_count}, "
+                        f"threshold={COUNT_SUMMARIZATION_THRESHOLD}")
+            
+            if should_summarize_by_count(chat_history, COUNT_SUMMARIZATION_THRESHOLD):
+                logger.info(f"Count-based summarization triggered for usecase {usecase_id}: "
+                           f"message count={current_count} >= threshold={COUNT_SUMMARIZATION_THRESHOLD}")
+                
+                # Perform count-based summarization
+                updated_history, updated_summary = await self._perform_count_based_summarization(
+                    chat_history, chat_summary
+                )
+                
+                # Update database
+                await self._update_database(usecase_id, updated_history, updated_summary, db)
+                
+                return updated_history, updated_summary, True
+            
+            # Fall back to token-based summarization (existing logic)
             # Get token usage information
             token_info = get_token_usage_info(chat_history, chat_summary, self.model_name)
             
             logger.info(f"Chat history analysis for usecase {usecase_id}: {token_info}")
             
-            # Check if summarization is needed
+            # Check if token-based summarization is needed
             if token_info["should_summarize"] and len(chat_history) > 5:
-                logger.info(f"Summarization needed for usecase {usecase_id}")
+                logger.info(f"Token-based summarization needed for usecase {usecase_id}")
                 
-                # Perform summarization
+                # Perform token-based summarization
                 updated_history, updated_summary = await self._perform_summarization(
                     chat_history, chat_summary
                 )
@@ -99,13 +175,75 @@ class ChatHistoryManager:
             return chat_history, chat_summary, False
     
     
+    async def _perform_count_based_summarization(
+        self,
+        chat_history: List[Dict[str, Any]],
+        existing_summary: Optional[str]
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Perform count-based summarization: summarize the last N messages when count reaches threshold.
+        
+        Args:
+            chat_history (List[Dict]): Current chat history (newest first)
+            existing_summary (str): Existing summary (if any)
+            
+        Returns:
+            Tuple[List[Dict], str]: Updated history and new summary
+        """
+        logger.info(f"Starting count-based summarization: total messages={len(chat_history)}, "
+                   f"threshold={COUNT_SUMMARIZATION_THRESHOLD}, window={COUNT_SUMMARIZATION_WINDOW}")
+        
+        # Find the last N messages to summarize
+        start_index, messages_to_summarize = find_last_n_messages_for_summarization(
+            chat_history, COUNT_SUMMARIZATION_WINDOW
+        )
+        
+        logger.info(f"Found {len(messages_to_summarize)} messages to summarize (start_index={start_index})")
+        
+        if not messages_to_summarize:
+            logger.warning("No messages found for count-based summarization")
+            return chat_history, existing_summary or ""
+        
+        # If we have an existing summary, include it in the context
+        if existing_summary:
+            logger.info("Including existing summary in summarization context")
+            # Prepend existing summary context to messages
+            summary_context = f"Previous summary:\n{existing_summary}\n\nNew messages to integrate:"
+            messages_to_summarize.insert(0, {
+                "system": summary_context,
+                "timestamp": "summary_context"
+            })
+        
+        # Use LangChain summarizer (no fallback)
+        logger.info(f"Calling LangChain summarizer for {len(messages_to_summarize)} messages")
+        from .langchain_summarizer import summarize_with_langchain
+        
+        new_summary = await summarize_with_langchain(
+            messages_to_summarize,
+            self.api_key,
+            self.model_name
+        )
+        logger.info(f"LangChain summarization completed successfully, summary length: {len(new_summary)} characters")
+        
+        # Update chat history by replacing the last N messages with summary marker
+        logger.info(f"Updating chat history: replacing messages[{start_index}:{len(chat_history)}] with summary marker")
+        from .chat_summarizer import update_chat_history_with_summary_by_index
+        updated_history = update_chat_history_with_summary_by_index(
+            chat_history, new_summary, start_index, len(chat_history)
+        )
+        
+        logger.info(f"Count-based summarization completed: original count={len(chat_history)}, "
+                   f"updated count={len(updated_history)}")
+        
+        return updated_history, new_summary
+    
     async def _perform_summarization(
         self,
         chat_history: List[Dict[str, Any]],
         existing_summary: Optional[str]
     ) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Perform the actual summarization process.
+        Perform token-based summarization (existing logic).
         
         Args:
             chat_history (List[Dict]): Current chat history

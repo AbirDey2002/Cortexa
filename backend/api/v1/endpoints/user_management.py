@@ -94,15 +94,11 @@ def _get_auth0_m2m_token(domain: str, client_id: str, client_secret: str) -> str
     }
     
     try:
-        logger.error(f"\033[91m[AUTH0-M2M] Requesting M2M token from: {token_url}\033[0m")
-        logger.error(f"\033[91m[AUTH0-M2M] Using client_id: {client_id[:10]}...\033[0m")
         response = requests.post(token_url, json=token_data, timeout=10)
         
         if response.status_code == 401:
             error_data = response.json() if response.content else {}
             error_msg = error_data.get("error_description", error_data.get("error", "Unauthorized"))
-            logger.error(f"\033[91m[AUTH0-M2M] 401 Unauthorized: {error_msg}\033[0m")
-            logger.error(f"\033[91m[AUTH0-M2M] Full error response: {error_data}\033[0m")
             
             detailed_error = (
                 "Auth0 Management API authentication failed (401 Unauthorized).\n\n"
@@ -129,12 +125,10 @@ def _get_auth0_m2m_token(domain: str, client_id: str, client_secret: str) -> str
         access_token = token_result.get("access_token")
         if not access_token:
             raise HTTPException(status_code=500, detail="No access token in Auth0 response")
-        logger.error(f"\033[91m[AUTH0-M2M] Successfully obtained M2M token\033[0m")
         return access_token
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"\033[91m[AUTH0-M2M] Failed to get M2M token: {str(e)}\033[0m")
         raise HTTPException(status_code=500, detail=f"Failed to get Auth0 Management API token: {str(e)}")
 
 
@@ -158,13 +152,10 @@ def _check_user_exists_in_auth0(domain: str, m2m_token: str, email: str) -> dict
             users = response.json()
             if users and len(users) > 0:
                 # Return the first matching user
-                logger.error(f"\033[91m[AUTH0-CHECK] User found in Auth0: {email}\033[0m")
                 return users[0]
         
-        logger.error(f"\033[91m[AUTH0-CHECK] User not found in Auth0: {email}\033[0m")
         return None
     except Exception as e:
-        logger.error(f"\033[91m[AUTH0-CHECK] Error checking user in Auth0: {str(e)}\033[0m")
         # Don't fail the signup if we can't check - let Auth0 handle it
         return None
 
@@ -188,12 +179,6 @@ def auth0_signup(payload: Auth0SignupRequest, db: Session = Depends(get_db)):
     m2m_client_secret = auth0_config.get("AUTH0_M2M_CLIENT_SECRET") or auth0_config.get("AUTH0_CLIENT_SECRET")
     has_m2m_creds = bool(auth0_config.get("AUTH0_M2M_CLIENT_ID") and auth0_config.get("AUTH0_M2M_CLIENT_SECRET"))
     
-    logger.error(f"\033[91m[AUTH0-SIGNUP] M2M credentials check:\033[0m")
-    logger.error(f"\033[91m[AUTH0-SIGNUP] - AUTH0_M2M_CLIENT_ID set: {bool(auth0_config.get('AUTH0_M2M_CLIENT_ID'))}\033[0m")
-    logger.error(f"\033[91m[AUTH0-SIGNUP] - AUTH0_M2M_CLIENT_SECRET set: {bool(auth0_config.get('AUTH0_M2M_CLIENT_SECRET'))}\033[0m")
-    logger.error(f"\033[91m[AUTH0-SIGNUP] - Using M2M credentials: {has_m2m_creds}\033[0m")
-    logger.error(f"\033[91m[AUTH0-SIGNUP] - Fallback to SPA credentials: {not has_m2m_creds}\033[0m")
-    
     if not domain or not m2m_client_id or not m2m_client_secret:
         error_msg = (
             "Auth0 configuration missing. Please set the following in your backend/.env file:\n"
@@ -205,22 +190,15 @@ def auth0_signup(payload: Auth0SignupRequest, db: Session = Depends(get_db)):
         )
         raise HTTPException(status_code=500, detail=error_msg)
     
-    if not has_m2m_creds:
-        logger.error(f"\033[91m[AUTH0-SIGNUP] WARNING: Using SPA credentials for M2M - this will likely fail!\033[0m")
-        logger.error(f"\033[91m[AUTH0-SIGNUP] Please create a Machine-to-Machine application and set AUTH0_M2M_CLIENT_ID and AUTH0_M2M_CLIENT_SECRET\033[0m")
-    
     try:
         # Get M2M token for Management API
-        logger.error(f"\033[91m[AUTH0-SIGNUP] Attempting to get M2M token with client_id: {m2m_client_id[:10]}...\033[0m")
         m2m_token = _get_auth0_m2m_token(domain, m2m_client_id, m2m_client_secret)
         
         # Check if user already exists in Auth0
-        logger.error(f"\033[91m[AUTH0-SIGNUP] Checking if user exists in Auth0: {payload.email}\033[0m")
         auth0_user = _check_user_exists_in_auth0(domain, m2m_token, payload.email)
         
         if auth0_user:
             # User exists in Auth0 but not in our database
-            logger.error(f"\033[91m[AUTH0-SIGNUP] User exists in Auth0 but not in DB. Syncing to database...\033[0m")
             
             # Check the connection type - if it's Google, they should sign in with Google
             connections = auth0_user.get("identities", [])
@@ -244,8 +222,6 @@ def auth0_signup(payload: Auth0SignupRequest, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(user)
             
-            logger.error(f"\033[91m[AUTH0-SIGNUP] User synced to database successfully: {user.email}\033[0m")
-            
             return {
                 "success": True,
                 "user_id": str(user.id),
@@ -254,8 +230,6 @@ def auth0_signup(payload: Auth0SignupRequest, db: Session = Depends(get_db)):
             }
         
         # User doesn't exist in Auth0, create new user
-        logger.error(f"\033[91m[AUTH0-SIGNUP] User doesn't exist in Auth0. Creating new user...\033[0m")
-        
         # Create user in Auth0 using Management API
         management_url = f"https://{domain}/api/v2/users"
         user_data = {
@@ -276,7 +250,6 @@ def auth0_signup(payload: Auth0SignupRequest, db: Session = Depends(get_db)):
         
         if response.status_code == 409:  # Conflict - user already exists (race condition)
             # This shouldn't happen since we checked, but handle it anyway
-            logger.error(f"\033[91m[AUTH0-SIGNUP] 409 Conflict - User was created between check and create. Syncing...\033[0m")
             auth0_user = _check_user_exists_in_auth0(domain, m2m_token, payload.email)
             if auth0_user:
                 # Sync to database
@@ -317,8 +290,6 @@ def auth0_signup(payload: Auth0SignupRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
         
-        logger.error(f"\033[91m[AUTH0-SIGNUP] User created successfully in Auth0 and DB: {user.email}\033[0m")
-        
         return {
             "success": True,
             "user_id": str(user.id),
@@ -329,7 +300,6 @@ def auth0_signup(payload: Auth0SignupRequest, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except requests.exceptions.HTTPError as e:
-        logger.error(f"\033[91m[AUTH0-SIGNUP] HTTP error: {str(e)}\033[0m")
         if hasattr(e, 'response') and e.response is not None:
             try:
                 error_data = e.response.json()
@@ -346,10 +316,8 @@ def auth0_signup(payload: Auth0SignupRequest, db: Session = Depends(get_db)):
                 raise HTTPException(status_code=400, detail=f"Failed to create user in Auth0: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to communicate with Auth0: {str(e)}")
     except requests.exceptions.RequestException as e:
-        logger.error(f"\033[91m[AUTH0-SIGNUP] Request error: {str(e)}\033[0m")
         raise HTTPException(status_code=500, detail=f"Failed to communicate with Auth0: {str(e)}")
     except Exception as e:
-        logger.error(f"\033[91m[AUTH0-SIGNUP] Unexpected error: {str(e)}\033[0m", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Unexpected error during signup: {str(e)}")
 
 
@@ -448,10 +416,8 @@ def auth0_login(payload: Auth0LoginRequest, db: Session = Depends(get_db)):
             error_msg = error_data.get("error_description", error_data.get("error", "Authentication failed"))
             raise HTTPException(status_code=401, detail=error_msg)
     except requests.exceptions.RequestException as e:
-        logger.error(f"\033[91m[AUTH0-LOGIN] Request error: {str(e)}\033[0m")
         raise HTTPException(status_code=500, detail=f"Failed to communicate with Auth0: {str(e)}")
     except Exception as e:
-        logger.error(f"\033[91m[AUTH0-LOGIN] Unexpected error: {str(e)}\033[0m", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Unexpected error during login: {str(e)}")
 
 
@@ -481,15 +447,12 @@ def sync_user_login(
     Only updates existing users, does NOT create new users.
     Returns error if user doesn't exist.
     """
-    logger.error("\033[91m[USER-SYNC-LOGIN] Endpoint called - Starting user sync for login\033[0m")
-    
     # Extract user info from JWT token
     email = token_payload.get("email")
     if not email:
         email = token_payload.get("sub")
     
     if not email:
-        logger.error("\033[91m[USER-SYNC-LOGIN] ERROR: Neither email nor sub found in token\033[0m")
         raise HTTPException(
             status_code=400,
             detail="Email or sub not found in token"
@@ -498,17 +461,14 @@ def sync_user_login(
     name = token_payload.get("name") or token_payload.get("nickname")
     picture = token_payload.get("picture")
     
-    logger.error(f"\033[91m[USER-SYNC-LOGIN] Checking if user exists with email: {email}\033[0m")
     user = db.query(User).filter(User.email == email, User.is_deleted == False).first()
     
     if not user:
-        logger.error(f"\033[91m[USER-SYNC-LOGIN] User does not exist! Email: {email}\033[0m")
         raise HTTPException(
             status_code=404,
             detail="No account found with this email. Please sign up first."
         )
     
-    logger.error(f"\033[91m[USER-SYNC-LOGIN] User exists! User ID: {user.id}\033[0m")
     # Update existing user
     if name:
         user.name = name
@@ -524,7 +484,6 @@ def sync_user_login(
         profile_image_url=user.profile_image_url
     )
     
-    logger.error(f"\033[91m[USER-SYNC-LOGIN] Returning response: {response}\033[0m")
     return response
 
 
@@ -537,52 +496,33 @@ def sync_user(
     Sync Auth0 user to database for SIGNUP flow.
     Creates user if doesn't exist, updates if exists.
     """
-    logger.error("\033[91m[USER-SYNC] Starting user sync\033[0m")
-    logger.error(f"\033[91m[USER-SYNC] Token payload keys: {list(token_payload.keys())}\033[0m")
-    logger.error(f"\033[91m[USER-SYNC] Full token payload: {token_payload}\033[0m")
-    
     # Extract user info from JWT token
     # Prefer email, but if not available, use sub (Auth0 user ID) as email
     email = token_payload.get("email")
     if not email:
-        logger.error("\033[91m[USER-SYNC] WARNING: No email in token, using sub as email\033[0m")
         email = token_payload.get("sub")
-        if email:
-            logger.error(f"\033[91m[USER-SYNC] Using sub as email: {email}\033[0m")
     
     name = token_payload.get("name") or token_payload.get("nickname")
     picture = token_payload.get("picture")
     
-    logger.error(f"\033[91m[USER-SYNC] Extracted email: {email}\033[0m")
-    logger.error(f"\033[91m[USER-SYNC] Extracted name: {name}\033[0m")
-    logger.error(f"\033[91m[USER-SYNC] Extracted picture: {picture}\033[0m")
-    logger.error(f"\033[91m[USER-SYNC] Token sub: {token_payload.get('sub')}\033[0m")
-    
     if not email:
-        logger.error("\033[91m[USER-SYNC] ERROR: Neither email nor sub found in token\033[0m")
         raise HTTPException(
             status_code=400,
             detail="Email or sub not found in token"
         )
     
     # Check if user exists
-    logger.error(f"\033[91m[USER-SYNC] Checking if user exists with email: {email}\033[0m")
     user = db.query(User).filter(User.email == email, User.is_deleted == False).first()
     
     if user:
-        logger.error(f"\033[91m[USER-SYNC] User exists! User ID: {user.id}\033[0m")
         # Update existing user
         if name:
-            logger.error(f"\033[91m[USER-SYNC] Updating name: {user.name} -> {name}\033[0m")
             user.name = name
         if picture:
-            logger.error(f"\033[91m[USER-SYNC] Updating profile_image_url: {user.profile_image_url} -> {picture}\033[0m")
             user.profile_image_url = picture
         db.commit()
         db.refresh(user)
-        logger.error(f"\033[91m[USER-SYNC] User updated successfully\033[0m")
     else:
-        logger.error("\033[91m[USER-SYNC] User does not exist, creating new user...\033[0m")
         # Check if email already exists (case-insensitive check for safety)
         existing_email = db.query(User).filter(
             func.lower(User.email) == email.lower(),
@@ -590,7 +530,6 @@ def sync_user(
         ).first()
         
         if existing_email:
-            logger.error(f"\033[91m[USER-SYNC] Email conflict detected: {email} already exists with different case\033[0m")
             raise HTTPException(
                 status_code=400,
                 detail="An account with this email already exists. Please sign in instead."
@@ -603,11 +542,9 @@ def sync_user(
             password=None,  # Auth0 handles authentication
             profile_image_url=picture
         )
-        logger.error(f"\033[91m[USER-SYNC] New user object created: email={user.email}, name={user.name}\033[0m")
         db.add(user)
         db.commit()
         db.refresh(user)
-        logger.error(f"\033[91m[USER-SYNC] New user created successfully! User ID: {user.id}\033[0m")
     
     response = UserSyncResponse(
         user_id=str(user.id),
@@ -616,7 +553,6 @@ def sync_user(
         profile_image_url=user.profile_image_url
     )
     
-    logger.error(f"\033[91m[USER-SYNC] Returning response: {response}\033[0m")
     return response
 
 

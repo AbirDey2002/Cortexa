@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useApi } from "@/lib/utils";
+import { SlidingName } from "@/components/chat/SlidingName";
 
 type UsecaseListItem = {
   usecase_id: string;
@@ -42,6 +43,27 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
   
   // Reference to track if we need to apply animation
   const animatingItemRef = useRef<string | null>(null);
+  
+  // Track naming state for both Stage 1 (conversation-based) and Stage 2 (document-based)
+  const namingStateRef = useRef<Map<string, {
+    // Stage 1 (conversation-based)
+    stage1: {
+      initialName: string;
+      isPolling: boolean;
+      startTime: number;
+    } | null;
+    // Stage 2 (document-based)
+    stage2: {
+      initialName: string;
+      textExtractionCompleted: boolean;
+      isPolling: boolean;
+      startTime: number;
+    } | null;
+  }>>(new Map());
+  
+  // Separate interval refs for Stage 1 and Stage 2 polling
+  const stage1PollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const stage2PollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Function to fetch and update usecases
   const fetchUsecases = useCallback(async () => {
@@ -72,7 +94,6 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
         setSelectedChat(activeUsecaseId);
       }
     } catch (e) {
-      console.error("Error fetching usecases:", e);
     }
   }, [userId, activeUsecaseId, apiGet]);
   
@@ -118,6 +139,405 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
     };
   }, [userId]);
 
+  // Stage 1: Poll for conversation-based naming (when name is still "Chat X")
+  useEffect(() => {
+    if (!activeUsecaseId || !userId) {
+      // Clean up Stage 1 polling if no active use case
+      if (stage1PollIntervalRef.current) {
+        clearInterval(stage1PollIntervalRef.current);
+        stage1PollIntervalRef.current = null;
+      }
+      return;
+    }
+
+    // Clean up any existing Stage 1 polling
+    if (stage1PollIntervalRef.current) {
+      clearInterval(stage1PollIntervalRef.current);
+      stage1PollIntervalRef.current = null;
+    }
+
+    const usecase = usecases.find(u => u.usecase_id === activeUsecaseId);
+    if (!usecase) return;
+
+    // Check if name is still default "Chat X"
+    const isDefaultName = usecase.usecase_name.startsWith("Chat ");
+
+    if (isDefaultName) {
+      // Initialize Stage 1 state if not exists
+      const currentState = namingStateRef.current.get(activeUsecaseId);
+      if (!currentState || !currentState.stage1) {
+        if (!currentState) {
+          namingStateRef.current.set(activeUsecaseId, {
+            stage1: {
+              initialName: usecase.usecase_name,
+              isPolling: false,
+              startTime: Date.now(),
+            },
+            stage2: null,
+          });
+        } else {
+          namingStateRef.current.set(activeUsecaseId, {
+            ...currentState,
+            stage1: {
+              initialName: usecase.usecase_name,
+              isPolling: false,
+              startTime: Date.now(),
+            },
+          });
+        }
+      }
+
+      // Start Stage 1 polling if not already polling
+      if (!stage1PollIntervalRef.current) {
+        let pollCount = 0;
+        const MAX_POLL_ATTEMPTS = 15; // 30 seconds max (15 * 2s) - conversation naming is faster
+
+        stage1PollIntervalRef.current = setInterval(async () => {
+          pollCount++;
+
+          // Stop polling after max attempts
+          if (pollCount > MAX_POLL_ATTEMPTS) {
+            if (stage1PollIntervalRef.current) {
+              clearInterval(stage1PollIntervalRef.current);
+              stage1PollIntervalRef.current = null;
+            }
+            // Clean up Stage 1 state after timeout
+            const state = namingStateRef.current.get(activeUsecaseId);
+            if (state) {
+              namingStateRef.current.set(activeUsecaseId, {
+                ...state,
+                stage1: null,
+              });
+            }
+            return;
+          }
+
+          try {
+            // Fetch updated use cases
+            const updatedUsecases = await apiGet<UsecaseListItem[]>(`/frontend/usecases/list`);
+            const updatedUsecase = updatedUsecases.find(u => u.usecase_id === activeUsecaseId);
+
+            if (updatedUsecase) {
+              const currentState = namingStateRef.current.get(activeUsecaseId);
+              const stage1State = currentState?.stage1;
+
+              // Check if name changed from "Chat X" (Stage 1 naming completed)
+              if (stage1State && !updatedUsecase.usecase_name.startsWith("Chat ")) {
+                // Name changed - Stage 1 naming completed
+                setUsecases(prev => prev.map(u =>
+                  u.usecase_id === activeUsecaseId
+                    ? { ...u, usecase_name: updatedUsecase.usecase_name }
+                    : u
+                ));
+
+                // Stop polling
+                if (stage1PollIntervalRef.current) {
+                  clearInterval(stage1PollIntervalRef.current);
+                  stage1PollIntervalRef.current = null;
+                }
+
+                // Clean up Stage 1 state
+                if (currentState) {
+                  namingStateRef.current.set(activeUsecaseId, {
+                    ...currentState,
+                    stage1: null,
+                  });
+                }
+                return;
+              }
+
+              // Update use cases list (in case other use cases changed)
+              setUsecases(prev => {
+                const nameChanged = prev.some((p) => {
+                  const updated = updatedUsecases.find(u => u.usecase_id === p.usecase_id);
+                  return updated && updated.usecase_name !== p.usecase_name;
+                });
+
+                if (nameChanged) {
+                  return prev.map(p => {
+                    const updated = updatedUsecases.find(u => u.usecase_id === p.usecase_id);
+                    if (updated && updated.usecase_name !== p.usecase_name) {
+                      return { ...p, usecase_name: updated.usecase_name };
+                    }
+                    return p;
+                  });
+                }
+                return prev;
+              });
+            }
+          } catch (e) {
+            // Continue polling on error
+          }
+        }, 2000); // Poll every 2 seconds
+      }
+    } else {
+      // Name already changed, stop Stage 1 polling if running
+      if (stage1PollIntervalRef.current) {
+        clearInterval(stage1PollIntervalRef.current);
+        stage1PollIntervalRef.current = null;
+      }
+      // Clean up Stage 1 state
+      const state = namingStateRef.current.get(activeUsecaseId);
+      if (state && state.stage1) {
+        namingStateRef.current.set(activeUsecaseId, {
+          ...state,
+          stage1: null,
+        });
+      }
+    }
+
+    // Cleanup function
+    return () => {
+      if (stage1PollIntervalRef.current) {
+        clearInterval(stage1PollIntervalRef.current);
+        stage1PollIntervalRef.current = null;
+      }
+    };
+  }, [activeUsecaseId, userId, usecases, apiGet]);
+
+  // Stage 2: Poll for document-based naming (when text extraction is completed)
+  useEffect(() => {
+    if (!activeUsecaseId || !userId) {
+      // Clean up Stage 2 polling if no active use case
+      if (stage2PollIntervalRef.current) {
+        clearInterval(stage2PollIntervalRef.current);
+        stage2PollIntervalRef.current = null;
+      }
+      return;
+    }
+
+    // Clean up any existing Stage 2 polling
+    if (stage2PollIntervalRef.current) {
+      clearInterval(stage2PollIntervalRef.current);
+      stage2PollIntervalRef.current = null;
+    }
+
+    // Top-level check: If name has already changed from initialName, stop polling
+    // This is similar to Stage 1's top-level check
+    const usecase = usecases.find(u => u.usecase_id === activeUsecaseId);
+    if (usecase) {
+      const currentState = namingStateRef.current.get(activeUsecaseId);
+      const stage2State = currentState?.stage2;
+      
+      // If we have Stage 2 state and the name has changed from initialName, stop polling
+      if (stage2State && usecase.usecase_name !== stage2State.initialName) {
+        // Name already changed - stop polling and clean up
+        if (stage2PollIntervalRef.current) {
+          clearInterval(stage2PollIntervalRef.current);
+          stage2PollIntervalRef.current = null;
+        }
+        // Clean up Stage 2 state
+        if (currentState) {
+          namingStateRef.current.set(activeUsecaseId, {
+            ...currentState,
+            stage2: null,
+          });
+        }
+        return;
+      }
+    }
+
+    let pollCount = 0;
+    const MAX_POLL_ATTEMPTS = 30; // 60 seconds max (30 * 2s)
+
+    const checkAndStartPolling = async () => {
+      try {
+        // Check if this use case exists in our list
+        const usecase = usecases.find(u => u.usecase_id === activeUsecaseId);
+        if (!usecase) return;
+
+        // Check text extraction status
+        const status = await apiGet<{
+          text_extraction: string;
+          status: string;
+        }>(`/frontend/usecases/${activeUsecaseId}/statuses`);
+
+        // Only poll if text_extraction is "Completed" (documents were uploaded)
+        if (status.text_extraction === "Completed") {
+          // Get or initialize state
+          const currentState = namingStateRef.current.get(activeUsecaseId);
+          const stage2State = currentState?.stage2;
+
+          // Initialize Stage 2 state if not exists or text extraction just completed
+          if (!stage2State || !stage2State.textExtractionCompleted) {
+            const newState = {
+              initialName: usecase.usecase_name, // Store current name when Stage 2 polling starts
+              textExtractionCompleted: true,
+              isPolling: false,
+              startTime: Date.now(),
+            };
+
+            if (!currentState) {
+              namingStateRef.current.set(activeUsecaseId, {
+                stage1: null,
+                stage2: newState,
+              });
+            } else {
+              namingStateRef.current.set(activeUsecaseId, {
+                ...currentState,
+                stage2: newState,
+              });
+            }
+          }
+
+          const updatedState = namingStateRef.current.get(activeUsecaseId);
+          const finalStage2State = updatedState?.stage2;
+          if (!finalStage2State) return;
+
+          // Double-check: If name has already changed, don't start polling
+          if (finalStage2State && usecase.usecase_name !== finalStage2State.initialName) {
+            // Name already changed - clean up and return
+            if (currentState) {
+              namingStateRef.current.set(activeUsecaseId, {
+                ...currentState,
+                stage2: null,
+              });
+            }
+            return;
+          }
+
+          // Start polling if not already polling
+          if (!stage2PollIntervalRef.current) {
+            pollCount = 0; // Reset poll count for new polling session
+            // Store the initial name in a closure to ensure we always have the correct reference
+            const storedInitialName = finalStage2State.initialName;
+            
+            stage2PollIntervalRef.current = setInterval(async () => {
+              // First check: Verify we still have state and should be polling
+              // Also check if interval ref still exists (might have been cleared)
+              if (!stage2PollIntervalRef.current) {
+                return;
+              }
+              
+              const currentState = namingStateRef.current.get(activeUsecaseId);
+              const stage2State = currentState?.stage2;
+              
+              // If state was cleaned up, stop immediately
+              if (!stage2State) {
+                if (stage2PollIntervalRef.current) {
+                  clearInterval(stage2PollIntervalRef.current);
+                  stage2PollIntervalRef.current = null;
+                }
+                return;
+              }
+
+              pollCount++;
+
+              // Stop polling after max attempts
+              if (pollCount > MAX_POLL_ATTEMPTS) {
+                if (stage2PollIntervalRef.current) {
+                  clearInterval(stage2PollIntervalRef.current);
+                  stage2PollIntervalRef.current = null;
+                }
+                // Clean up Stage 2 state after timeout
+                const state = namingStateRef.current.get(activeUsecaseId);
+                if (state) {
+                  namingStateRef.current.set(activeUsecaseId, {
+                    ...state,
+                    stage2: null,
+                  });
+                }
+                return;
+              }
+
+              try {
+                // Fetch updated use cases
+                const updatedUsecases = await apiGet<UsecaseListItem[]>(`/frontend/usecases/list`);
+                const updatedUsecase = updatedUsecases.find(u => u.usecase_id === activeUsecaseId);
+
+                if (updatedUsecase) {
+                  // Check if name changed from the name stored when Stage 2 polling started
+                  // Use both the stored initialName and current state for comparison
+                  const nameChanged = updatedUsecase.usecase_name !== storedInitialName;
+                  
+                  if (nameChanged) {
+                    // Name changed - Stage 2 naming completed
+                    // CRITICAL: Stop polling and clean up state BEFORE updating usecases
+                    // This prevents useEffect from re-running and restarting polling
+                    
+                    // Stop polling immediately - clear interval first
+                    const intervalId = stage2PollIntervalRef.current;
+                    if (intervalId) {
+                      clearInterval(intervalId);
+                      stage2PollIntervalRef.current = null;
+                    }
+
+                    // Clean up Stage 2 state BEFORE setUsecases triggers useEffect re-run
+                    const finalState = namingStateRef.current.get(activeUsecaseId);
+                    if (finalState) {
+                      namingStateRef.current.set(activeUsecaseId, {
+                        ...finalState,
+                        stage2: null,
+                      });
+                    }
+                    
+                    // Now update usecases - this will trigger useEffect re-run, but state is already cleaned up
+                    setUsecases(prev => prev.map(u =>
+                      u.usecase_id === activeUsecaseId
+                        ? { ...u, usecase_name: updatedUsecase.usecase_name }
+                        : u
+                    ));
+                    
+                    return;
+                  }
+
+                  // Update use cases list (in case other use cases changed)
+                  setUsecases(prev => {
+                    const nameChanged = prev.some((p) => {
+                      const updated = updatedUsecases.find(u => u.usecase_id === p.usecase_id);
+                      return updated && updated.usecase_name !== p.usecase_name;
+                    });
+
+                    if (nameChanged) {
+                      return prev.map(p => {
+                        const updated = updatedUsecases.find(u => u.usecase_id === p.usecase_id);
+                        if (updated && updated.usecase_name !== p.usecase_name) {
+                          return { ...p, usecase_name: updated.usecase_name };
+                        }
+                        return p;
+                      });
+                    }
+                    return prev;
+                  });
+                }
+              } catch (e) {
+                // Continue polling on error
+              }
+            }, 2000); // Poll every 2 seconds
+          }
+        } else {
+          // Text extraction not completed, no need to poll
+          // Clean up Stage 2 state if exists
+          const state = namingStateRef.current.get(activeUsecaseId);
+          if (state && state.stage2) {
+            namingStateRef.current.set(activeUsecaseId, {
+              ...state,
+              stage2: null,
+            });
+          }
+          // Stop polling if it was running
+          if (stage2PollIntervalRef.current) {
+            clearInterval(stage2PollIntervalRef.current);
+            stage2PollIntervalRef.current = null;
+          }
+        }
+      } catch (e) {
+        // Silently fail - will retry when use case changes
+      }
+    };
+
+    // Initial check
+    checkAndStartPolling();
+
+    // Cleanup function
+    return () => {
+      if (stage2PollIntervalRef.current) {
+        clearInterval(stage2PollIntervalRef.current);
+        stage2PollIntervalRef.current = null;
+      }
+    };
+  }, [activeUsecaseId, userId, usecases, apiGet]);
+
   const handleNewChat = async () => {
     setSelectedChat(null);
     try {
@@ -136,7 +556,6 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
       setSelectedChat(record.usecase_id);
       onNewUsecase(record.usecase_id);
     } catch (e) {
-      console.error("Error creating new chat:", e);
     }
   };
 
@@ -225,7 +644,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
                             </SidebarMenuButton>
                           </TooltipTrigger>
                           <TooltipContent side="right">
-                            <p className="max-w-xs">{chat.usecase_name}</p>
+                            <p className="max-w-xs break-words">{chat.usecase_name}</p>
                           </TooltipContent>
                         </Tooltip>
                       ) : (
@@ -249,10 +668,12 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
                             }}
                           >
                             <MessageSquare className="h-4 w-4 flex-shrink-0" />
-                            <div className="flex-1 min-w-0 ml-3">
-                              <p className="text-sm font-medium truncate">
-                                {chat.usecase_name}
-                              </p>
+                            <div className="flex-1 min-w-0 ml-3 overflow-hidden">
+                              <SlidingName
+                                name={chat.usecase_name}
+                                maxChars={30}
+                                className="text-sm font-medium"
+                              />
                             </div>
                           </div>
                         </SidebarMenuButton>

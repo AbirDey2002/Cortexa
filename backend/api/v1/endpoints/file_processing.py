@@ -264,6 +264,34 @@ async def upload_file(
                     
                     db.commit()
                     logger.info(f"Set text_extraction='{usecase2.text_extraction}' for usecase {usecase_id} (processed={processed_count})")
+                    
+                    # Stage 2: Generate usecase name from extracted documents
+                    # Only trigger if text extraction completed and we processed at least one file
+                    if usecase2.text_extraction == "Completed" and processed_count > 0:
+                        try:
+                            from services.llm.usecase_naming_agent import (
+                                _run_document_naming_task
+                            )
+                            from core.env_config import get_env_variable
+                            
+                            api_key = get_env_variable("GEMINI_API_KEY", "")
+                            if api_key:
+                                logger.info(f"Text extraction completed for usecase {usecase_id} (processed {processed_count} files), scheduling document-based naming...")
+                                # Run as background task (don't block the main flow)
+                                # The task will create its own DB session, so data must be committed first (which we just did)
+                                background_tasks.add_task(
+                                    _run_document_naming_task,
+                                    usecase_id,
+                                    api_key
+                                )
+                                logger.info(f"Scheduled document-based naming task for usecase {usecase_id}")
+                            else:
+                                logger.warning(f"Cannot generate name: GEMINI_API_KEY not configured")
+                        except Exception as naming_error:
+                            logger.error(f"Error scheduling Stage 2 naming for usecase {usecase_id}: {naming_error}", exc_info=True)
+                            # Don't fail the file upload if naming fails
+                    else:
+                        logger.debug(f"Skipping Stage 2 naming: text_extraction={usecase2.text_extraction}, processed_count={processed_count}")
             except Exception as e:
                 logger.warning(f"Unable to finalize text_extraction for usecase {usecase_id}: {e}")
 

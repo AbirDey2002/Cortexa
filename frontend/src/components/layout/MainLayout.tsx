@@ -43,7 +43,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
       try {
         await apiPost(`/frontend/usecases/${activeUsecaseId}/model`, { model: modelId });
       } catch (error) {
-        console.error("Failed to update usecase model:", error);
       }
     }
   };

@@ -59,7 +59,6 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
         
         setUserId("52588196-f538-42bf-adb8-df885ab0120c");
       } catch (e) {
-        console.error("Failed to get usecases:", e);
         setUserId("52588196-f538-42bf-adb8-df885ab0120c");
       }
     })();
@@ -106,7 +105,6 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
           })
         );
       } catch (e) {
-        console.error("Error loading chat history:", e);
         setMessages([]);
       }
     }
@@ -175,7 +173,6 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
           }
         }
       } catch (e) {
-        console.error("Error polling status:", e);
         setIsLoading(false);
         setWaitingForResponse(false);
       }
@@ -212,7 +209,6 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
         window.dispatchEvent(new CustomEvent('chat-updated', { detail: { usecaseId: activeUsecaseId } }));
       }
     } catch (e) {
-      console.error("Error sending message:", e);
       setIsLoading(false);
     }
   };

@@ -56,7 +56,6 @@ export function LoginModal({ open, onOpenChange, onSwitchToSignup, initialError 
           userExists = data.exists === true;
         }
       } catch (err) {
-        console.error("Error checking user existence:", err);
       }
 
       if (!userExists) {
@@ -83,7 +82,6 @@ export function LoginModal({ open, onOpenChange, onSwitchToSignup, initialError 
       });
       // Note: After redirect, user will be handled by Callback component
     } catch (err: any) {
-      console.error("Login error:", err);
       setError(err.error_description || err.message || "Failed to login. Please try again.");
     } finally {
       setIsLoading(false);
@@ -111,7 +109,6 @@ export function LoginModal({ open, onOpenChange, onSwitchToSignup, initialError 
       });
       // Note: After redirect, user will be handled by Callback component
     } catch (err: any) {
-      console.error("Google login error:", err);
       setError(err.error_description || err.message || "Failed to login with Google. Please try again.");
       setIsLoading(false);
     }

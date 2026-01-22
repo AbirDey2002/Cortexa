@@ -42,7 +42,6 @@ export default function Homepage() {
   // Redirect if already logged in
   useEffect(() => {
     if (!isLoading && isAuthenticated && userId) {
-      console.log("%c[FRONTEND-HOMEPAGE] User authenticated, redirecting to dashboard...", "color: red; font-weight: bold");
       navigate(`/user/${userId}`, { replace: true });
     }
   }, [isAuthenticated, userId, isLoading, navigate]);

@@ -340,6 +340,58 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                     len(updated_history),
                     len(updated_summary) if updated_summary else 0,
                 )
+                
+                # Stage 1: Check if this is the first message exchange and generate name
+                # Note: This runs synchronously but the actual naming is done in background
+                # We need to extract the exchange here while we have access to final_history
+                try:
+                    from services.llm.usecase_naming_agent import (
+                        _is_first_message_exchange,
+                        _extract_first_exchange,
+                        _run_conversation_naming_task
+                    )
+                    
+                    # Check if this is the first exchange (must be done after final_history is built)
+                    is_first = _is_first_message_exchange(final_history)
+                    logger.info(f"Checking first message exchange for usecase {usecase_id}: is_first={is_first}, history_length={len(final_history)}")
+                    
+                    if is_first:
+                        logger.info(f"First message exchange detected for usecase {usecase_id}, scheduling name generation...")
+                        user_query, agent_response = _extract_first_exchange(final_history)
+                        
+                        if user_query and agent_response:
+                            # Schedule as background task (don't block the main flow)
+                            try:
+                                # Note: We can't use background_tasks here since this is inside a sync function
+                                # Instead, we'll use asyncio.create_task or run it in a thread
+                                import asyncio
+                                import threading
+                                
+                                def run_naming_task():
+                                    try:
+                                        _run_conversation_naming_task(
+                                            usecase_id=usecase_id,
+                                            user_query=user_query,
+                                            agent_response=agent_response,
+                                            api_key=GEMINI_API_KEY
+                                        )
+                                    except Exception as e:
+                                        logger.error(f"Error in conversation naming task: {e}", exc_info=True)
+                                
+                                # Run in background thread to avoid blocking
+                                naming_thread = threading.Thread(target=run_naming_task, daemon=True)
+                                naming_thread.start()
+                                logger.info(f"Scheduled conversation-based naming task for usecase {usecase_id}")
+                            except Exception as naming_error:
+                                logger.error(f"Error scheduling name generation for usecase {usecase_id}: {naming_error}", exc_info=True)
+                                # Don't fail the chat if naming fails
+                        else:
+                            logger.warning(f"Could not extract first exchange for usecase {usecase_id}: user_query={bool(user_query)}, agent_response={bool(agent_response)}")
+                    else:
+                        logger.debug(f"Not first message exchange for usecase {usecase_id}, skipping name generation")
+                except Exception as e:
+                    logger.error(f"Error in Stage 1 naming for usecase {usecase_id}: {e}", exc_info=True)
+                    # Don't fail the chat if naming fails
 
             except Exception as e:
                 logger.exception(f"Enhanced Gemini API call failed for usecase_id={usecase_id}: {e}")

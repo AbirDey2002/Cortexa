@@ -61,7 +61,6 @@ export function SignupModal({ open, onOpenChange, onSwitchToLogin }: SignupModal
           userExists = data.exists === true;
         }
       } catch (err) {
-        console.error("Error checking user existence:", err);
       }
 
       if (userExists) {
@@ -110,7 +109,6 @@ export function SignupModal({ open, onOpenChange, onSwitchToLogin }: SignupModal
       });
       // Note: After redirect, user will be handled by Callback component
     } catch (err: any) {
-      console.error("Signup error:", err);
       setError(err.error_description || err.message || "Failed to create account. Please try again.");
     } finally {
       setIsLoading(false);
@@ -138,7 +136,6 @@ export function SignupModal({ open, onOpenChange, onSwitchToLogin }: SignupModal
       });
       // Note: After redirect, user will be handled by Callback component
     } catch (err: any) {
-      console.error("Google signup error:", err);
       setError(err.error_description || err.message || "Failed to sign up with Google. Please try again.");
       setIsLoading(false);
     }

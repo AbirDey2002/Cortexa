@@ -37,7 +37,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === SESSION_STORAGE_KEY) {
         const newUserId = e.newValue;
-        console.log("%c[AUTH-CONTEXT] SessionStorage changed (storage event), updating userId:", "color: red", newUserId);
         setUserId(newUserId);
       }
     };
@@ -49,7 +48,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Listen for custom event (same-tab changes)
   useEffect(() => {
     const handleCustomStorageChange = (e: CustomEvent<string | null>) => {
-      console.log("%c[AUTH-CONTEXT] SessionStorage changed (custom event), updating userId:", "color: red", e.detail);
       setUserId(e.detail);
     };
     
@@ -63,7 +61,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (typeof window !== "undefined") {
         const storedUserId = sessionStorage.getItem(SESSION_STORAGE_KEY);
         if (storedUserId !== userId) {
-          console.log("%c[AUTH-CONTEXT] SessionStorage updated (focus check), syncing state:", "color: red", storedUserId);
           setUserId(storedUserId);
         }
       }
@@ -99,7 +96,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       return await auth0GetAccessTokenSilently();
     } catch (error) {
-      console.error("Error getting access token:", error);
       throw error;
     }
   };
@@ -132,12 +128,10 @@ export function useAuth() {
 // Helper function to set userId in sessionStorage (used by Callback page)
 export function setUserIdInSession(userId: string) {
   if (typeof window !== "undefined") {
-    console.log("%c[AUTH-CONTEXT] Setting userId in sessionStorage:", "color: red", userId);
     sessionStorage.setItem(SESSION_STORAGE_KEY, userId);
     // Dispatch custom event to notify AuthContext immediately (same-tab)
     const event = new CustomEvent('cortexa:userIdChanged', { detail: userId });
     window.dispatchEvent(event);
-    console.log("%c[AUTH-CONTEXT] Custom event dispatched for userId change", "color: red");
   }
 }
 

@@ -67,7 +67,6 @@ export function useApi() {
           headers.Authorization = `Bearer ${token}`;
         }
       } catch (error) {
-        console.error("Error getting access token:", error);
       }
     }
 
@@ -89,7 +88,6 @@ export function useApi() {
             return retryRes.json();
           }
         } catch (error) {
-          console.error("Error refreshing token:", error);
         }
       }
       throw new Error(`GET ${path} failed`);
@@ -121,7 +119,6 @@ export function useApi() {
           requestHeaders.Authorization = `Bearer ${token}`;
         }
       } catch (error) {
-        console.error("Error getting access token:", error);
       }
     }
 
@@ -159,7 +156,6 @@ export function useApi() {
             return retryRes.json();
           }
         } catch (error) {
-          console.error("Error refreshing token:", error);
         }
       }
       throw new Error(`POST ${path} failed`);

@@ -54,7 +54,6 @@ export function TopNavigation({ currentModel, onModelChange }: TopNavigationProp
           setAvailableModels(response.models);
         }
       } catch (error) {
-        console.error("Failed to fetch models:", error);
         // Fallback to default models if API fails
         setAvailableModels([
           { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", description: "Fast and efficient model" },

@@ -29,7 +29,6 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
             setCurrentModel(usecaseData.selected_model);
           }
         } catch (error) {
-          console.error("Failed to load usecase model:", error);
         }
       })();
     }
@@ -56,7 +55,6 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
         
         // Don't automatically set an active usecase - let the user choose
       } catch (e) {
-        console.error("Failed to get usecases:", e);
       }
     })();
   }, [initialUsecaseId, onUsecaseChange, userId, apiGet]);
@@ -117,7 +115,6 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
                     try {
                       await apiPost(`/frontend/usecases/${activeUsecaseId}/model`, { model: modelId });
                     } catch (error) {
-                      console.error("Failed to update usecase model:", error);
                     }
                   }
                 }}
@@ -138,7 +135,6 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
                   try {
                     await apiPost(`/frontend/usecases/${activeUsecaseId}/model`, { model: modelId });
                   } catch (error) {
-                    console.error("Failed to update usecase model:", error);
                   }
                 }
               }} />

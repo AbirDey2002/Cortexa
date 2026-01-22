@@ -173,7 +173,6 @@ export function ScenariosMessage({
 
   // Expanded view
   if (isExpanded && onMinimize) {
-    console.log('[SCENARIOS-EXPAND] Rendering expanded view, messageId:', messageId, 'scenarios:', scenarios.length, 'filtered:', filteredScenarios.length, 'isExpanded:', isExpanded);
     
     const titleText = scenarios.length === 0 
       ? 'Scenarios (0)'
