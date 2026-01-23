@@ -18,6 +18,7 @@ import { PdfContentMessage } from "@/components/chat/PdfContentMessage";
 import { RequirementsMessage } from "@/components/chat/RequirementsMessage";
 import { ScenariosMessage } from "@/components/chat/ScenariosMessage";
 import { TestCasesMessage } from "@/components/chat/TestCasesMessage";
+import { requestNotificationPermission, sendNotification } from "@/lib/notifications";
 
 function extractMainTextFromStored(raw: any): string {
   try {
@@ -121,7 +122,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
   const ocrBannerTimerRef = useRef<number | null>(null);
   const [pendingFiles, setPendingFiles] = useState<SelectedFile[]>([]);
   const [currentModel, setCurrentModel] = useState<string>(propCurrentModel || "gemini-2.5-flash-lite");
-  
+
   // Sync with prop if provided
   useEffect(() => {
     if (propCurrentModel !== undefined) {
@@ -135,7 +136,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
   const [pdfContentMessages, setPdfContentMessages] = useState<Array<{
     fileId: string;
     fileName: string;
-    pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+    pages: Array<{ page_number: number; markdown: string; is_completed: boolean }>;
     timestamp: Date;
   }>>([]);
   const [requirementsMessages, setRequirementsMessages] = useState<Array<{
@@ -208,6 +209,42 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
     }
   };
 
+  const notificationsEnabledRef = useRef(false);
+
+  // Fetch notification settings
+  useEffect(() => {
+    if (userId) {
+      apiGet<any>(`/users/${userId}`).then(user => {
+        if (user) {
+          notificationsEnabledRef.current = user.push_notification !== undefined ? user.push_notification : true;
+          if (notificationsEnabledRef.current) {
+            requestNotificationPermission();
+          }
+        }
+      }).catch(() => { });
+    }
+  }, [userId]);
+
+  // Handle push notifications for new messages
+  useEffect(() => {
+    if (messages.length === 0) return;
+
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage.type === "assistant" && !document.hasFocus() && notificationsEnabledRef.current) {
+      // Find the corresponding user query if possible (message before last)
+      const userQuery = messages[messages.length - 2]?.content || "Your Query";
+
+      let title = "Cortexa Answered";
+      // Try to make title more relevant
+      if (messages.length >= 2) title = "Cortexa Answered: " + (userQuery.length > 20 ? userQuery.substring(0, 20) + "..." : userQuery);
+
+      const body = extractMainTextFromStored(lastMessage.content);
+      const preview = body.length > 50 ? body.substring(0, 50) + "..." : body;
+
+      sendNotification(title, preview);
+    }
+  }, [messages]);
+
   // Load chat for selected usecase and reset per-chat state
   useEffect(() => {
     let cancelled = false;
@@ -258,7 +295,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
           } else if (rg?.requirement_generation === "Completed" || rg?.requirement_generation === "Failed") {
             setIsReqGenBlocking(false);
           }
-        } catch {}
+        } catch { }
         // Initialize scenario generation status banner on usecase change
         try {
           const sg = await apiGet<any>(`/scenarios/${usecaseId}/status`);
@@ -296,8 +333,8 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
           } else if (sg?.scenario_generation === "Completed" || sg?.scenario_generation === "Failed") {
             setIsScenarioGenBlocking(false);
           }
-        } catch {}
-        
+        } catch { }
+
         // Load model from usecase (only if not controlled by parent)
         if (propCurrentModel === undefined) {
           try {
@@ -309,30 +346,30 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 onModelChange(usecaseData.selected_model);
               }
             }
-          } catch {}
+          } catch { }
         }
-        
+
         // Fetch unified chat history (Gemini-backed backend writes to same store)
         const history = await apiGet<any[]>(`/frontend/usecases/${usecaseId}/chat`);
         if (cancelled) return;
-        
+
         // Sort messages by timestamp in ascending order (oldest first)
         const sortedHistory = [...history].sort((a, b) => {
           const tsA = new Date(a.timestamp || 0).getTime();
           const tsB = new Date(b.timestamp || 0).getTime();
           return tsA - tsB;
         });
-        
+
         const mappedMessages = sortedHistory.map((entry, idx) => {
           const ts = new Date(entry.timestamp || Date.now());
           if (entry.user !== undefined) {
-            const message: Message = { 
-              id: `u-${idx}`, 
-              type: "user", 
-              content: entry.user, 
-              timestamp: ts 
+            const message: Message = {
+              id: `u-${idx}`,
+              type: "user",
+              content: entry.user,
+              timestamp: ts
             };
-            
+
             // Add file information if available
             if (entry.files && entry.files.length > 0) {
               message.file = {
@@ -340,15 +377,15 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 type: entry.files[0].type
               };
             }
-            
+
             return message;
           }
-          
+
           // Skip [modal] marker entries - they will be processed separately
           if (entry.modal) {
             return null;
           }
-          
+
           const content = entry.system;
           // agent output contains JSON; show only user_answer if present
           let shown = extractMainTextFromStored(content);
@@ -416,26 +453,26 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
             } else if (obj && obj.user_answer) {
               shown = obj.user_answer;
             }
-          } catch {}
+          } catch { }
           const msg: Message = { id: `a-${idx}`, type: "assistant", content: shown, timestamp: ts } as Message;
           if (entry.traces) {
             msg.traces = entry.traces as Traces;
           }
           return msg;
         }).filter((msg): msg is Message => msg !== null);
-        
+
         setMessages(mappedMessages);
-        
+
         // Check for [modal] markers in chat history and fetch content
         const modalMarkers = sortedHistory.filter((entry: any) => entry && entry.modal);
-        
+
         // Track which types we found markers for BEFORE processing
         const foundPdfMarkers = modalMarkers.some((m: any) => m.modal?.file_id);
         const foundRequirementsMarkers = modalMarkers.some((m: any) => m.modal?.type === "requirements");
         const foundScenariosMarkers = modalMarkers.some((m: any) => m.modal?.type === "scenarios");
         const foundTestCasesMarkers = modalMarkers.some((m: any) => m.modal?.type === "testcases");
-        
-        
+
+
         if (modalMarkers.length > 0) {
           // Fetch PDF content and requirements for all markers - load asynchronously without blocking
           // Don't await - let messages render immediately while PDF content loads in background
@@ -443,10 +480,10 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
             const pdfContents: Array<{
               fileId: string;
               fileName: string;
-              pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+              pages: Array<{ page_number: number; markdown: string; is_completed: boolean }>;
               timestamp: Date;
             }> = [];
-            
+
             const requirementsContents: Array<{
               requirements: Array<{
                 id: string;
@@ -457,7 +494,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               }>;
               timestamp: Date;
             }> = [];
-            
+
             const scenariosContents: Array<{
               scenarios: Array<{
                 id: string;
@@ -472,7 +509,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               }>;
               timestamp: Date;
             }> = [];
-            
+
             const testCasesContents: Array<{
               testCases: Array<{
                 id: string;
@@ -497,7 +534,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               }>;
               timestamp: Date;
             }> = [];
-            
+
             // Load modal content in parallel for better performance - use Promise.allSettled to handle errors gracefully
             const loadPromises = modalMarkers.map(async (markerEntry) => {
               const modal = markerEntry.modal;
@@ -558,11 +595,11 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 }
               }
             });
-            
+
             // Wait for all loads to complete (but don't block message rendering - this runs in background)
             // Use allSettled so errors in one load don't prevent others from completing
             await Promise.allSettled(loadPromises);
-            
+
             // Always update state for types we found markers for
             // When loading from chat history, we should load ALL markers found, not preserve existing state
             // (existing state was already cleared when usecase changed)
@@ -592,7 +629,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               // No test cases markers found - ensure state is cleared
               setTestCasesMessages([]);
             }
-            
+
           })();
         } else {
           // No modal markers found - clear all (this is correct when switching to a usecase with no modals)
@@ -601,7 +638,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
           setScenariosMessages([]);
           setTestCasesMessages([]);
         }
-        
+
         // Wait for DOM to update after all state changes, then scroll to bottom
         // Use requestAnimationFrame to ensure DOM is fully rendered
         requestAnimationFrame(() => {
@@ -629,31 +666,31 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
   useEffect(() => {
     // Only poll if we're in a usecase AND waiting for a response
     if (!usecaseId || !waitingForResponse) return;
-    
+
     let timer: any;
-    
+
     async function poll() {
       try {
         // Poll for status using the specific usecase endpoint
         const response = await apiGet<any>(`/frontend/usecases/${usecaseId}/statuses`);
         const currentStatus = response.status || "Completed";
         setStatus(currentStatus);
-        
+
         if (currentStatus === "In Progress") {
           // Show loading indicator while in progress
           setIsLoading(true);
-          
+
           // Continue polling while in progress
           timer = setTimeout(poll, 2000);
         } else if (currentStatus === "Completed") {
           // When status changes to Completed
           setIsLoading(false);
           setWaitingForResponse(false); // Stop waiting for response
-          
+
           // If the response includes the latest message, add it to messages
-          if (response.latest_message && !messages.some(m => 
+          if (response.latest_message && !messages.some(m =>
             m.type === "assistant" && m.content === response.latest_message)) {
-            
+
             // Add the system message
             const systemMessage: Message = {
               id: `a-${Date.now()}`,
@@ -661,21 +698,21 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               content: response.latest_message,
               timestamp: new Date(),
             };
-            
+
             setMessages(prev => [...prev, systemMessage]);
             // Scroll to bottom after system message is added
             setTimeout(scrollToBottom, 100);
           } else {
             // Get the full chat history
             const history = await apiGet<any[]>(`/frontend/usecases/${usecaseId}/chat`);
-            
+
             // Sort messages by timestamp in ascending order (oldest first)
             const sortedHistory = [...history].sort((a, b) => {
               const tsA = new Date(a.timestamp || 0).getTime();
               const tsB = new Date(b.timestamp || 0).getTime();
               return tsA - tsB;
             });
-            
+
             // Check for [modal] markers in chat history and fetch content
             const modalMarkers = sortedHistory.filter((entry: any) => entry && entry.modal);
             if (modalMarkers.length > 0) {
@@ -683,10 +720,10 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               const pdfContents: Array<{
                 fileId: string;
                 fileName: string;
-                pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+                pages: Array<{ page_number: number; markdown: string; is_completed: boolean }>;
                 timestamp: Date;
               }> = [];
-              
+
               const requirementsContents: Array<{
                 requirements: Array<{
                   id: string;
@@ -697,7 +734,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 }>;
                 timestamp: Date;
               }> = [];
-              
+
               const scenariosContents: Array<{
                 scenarios: Array<{
                   id: string;
@@ -712,7 +749,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 }>;
                 timestamp: Date;
               }> = [];
-              
+
               const testCasesContents: Array<{
                 testCases: Array<{
                   id: string;
@@ -737,15 +774,15 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 }>;
                 timestamp: Date;
               }> = [];
-              
-            // Track which types we found markers for BEFORE processing
-            const foundPdfMarkers = modalMarkers.some((m: any) => m.modal?.file_id);
-            const foundRequirementsMarkers = modalMarkers.some((m: any) => m.modal?.type === "requirements");
-            const foundScenariosMarkers = modalMarkers.some((m: any) => m.modal?.type === "scenarios");
-            const foundTestCasesMarkers = modalMarkers.some((m: any) => m.modal?.type === "testcases");
-            
-            
-            for (const markerEntry of modalMarkers) {
+
+              // Track which types we found markers for BEFORE processing
+              const foundPdfMarkers = modalMarkers.some((m: any) => m.modal?.file_id);
+              const foundRequirementsMarkers = modalMarkers.some((m: any) => m.modal?.type === "requirements");
+              const foundScenariosMarkers = modalMarkers.some((m: any) => m.modal?.type === "scenarios");
+              const foundTestCasesMarkers = modalMarkers.some((m: any) => m.modal?.type === "testcases");
+
+
+              for (const markerEntry of modalMarkers) {
                 const modal = markerEntry.modal;
                 if (modal && modal.file_id) {
                   // PDF modal
@@ -801,7 +838,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                   }
                 }
               }
-              
+
               // During polling, only update state for types we found markers for
               // This preserves existing state for types we didn't find markers for during polling
               // (polling is incremental, not a full reload)
@@ -817,9 +854,9 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               if (foundTestCasesMarkers) {
                 setTestCasesMessages(testCasesContents);
               }
-              
+
             }
-            
+
             const mappedMessages = sortedHistory.map((entry, idx) => {
               const ts = new Date(entry.timestamp || Date.now());
               // Skip [modal] marker entries - they will be processed separately
@@ -827,13 +864,13 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 return null;
               }
               if (entry.user !== undefined) {
-                const message: Message = { 
-                  id: `u-${idx}`, 
-                  type: "user", 
-                  content: entry.user, 
-                  timestamp: ts 
+                const message: Message = {
+                  id: `u-${idx}`,
+                  type: "user",
+                  content: entry.user,
+                  timestamp: ts
                 };
-                
+
                 // Add file information if available
                 if (entry.files && entry.files.length > 0) {
                   message.file = {
@@ -841,7 +878,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     type: entry.files[0].type
                   };
                 }
-                
+
                 return message;
               }
               const content = entry.system;
@@ -914,16 +951,16 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 } else if (obj && obj.user_answer) {
                   shown = obj.user_answer;
                 }
-              } catch {}
+              } catch { }
               const msg: Message = { id: `a-${idx}`, type: "assistant", content: shown, timestamp: ts } as Message;
               if (entry.traces) {
                 msg.traces = entry.traces as Traces;
               }
               return msg;
             }).filter((msg): msg is Message => msg !== null);
-            
+
             setMessages(mappedMessages);
-            
+
             // Scroll to bottom after messages are rendered
             setTimeout(scrollToBottom, 100);
           }
@@ -933,10 +970,10 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
         setWaitingForResponse(false); // Stop waiting on error
       }
     }
-    
+
     // Start polling immediately when waiting for response
     poll();
-    
+
     return () => {
       clearTimeout(timer);
     };
@@ -948,16 +985,16 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
       const usecases = await apiGet<any[]>(`/frontend/usecases/list`);
       const chatCount = usecases.length + 1;
       const chatName = `Chat ${chatCount}`;
-      
+
       // Create new usecase
       const payload = { user_id: userId, usecase_name: chatName, email: "abir.dey@intellectdesign.com" };
       const record = await apiPost<any>("/usecases", payload);
-      
+
       // Notify the parent component about the new usecase
       if (window.dispatchEvent) {
         window.dispatchEvent(new CustomEvent('usecase-created', { detail: { usecaseId: record.usecase_id } }));
       }
-      
+
       return record.usecase_id;
     } catch (e) {
       return null;
@@ -966,7 +1003,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
 
   const handleSend = async () => {
     if (!inputValue.trim()) return;
-    
+
     // If no usecase is selected, create a new one first
     let targetUsecaseId = usecaseId;
     if (!targetUsecaseId) {
@@ -988,10 +1025,10 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
     setMessages(prev => [...prev, userMessage]);
     // Scroll to bottom after user message is added
     setTimeout(scrollToBottom, 100);
-    
+
     const messageContent = inputValue;
     const filesToUpload = [...pendingFiles];
-    
+
     setInputValue("");
     setPendingFiles([]);
     setIsLoading(true);
@@ -1007,11 +1044,11 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
         formData.append('usecase_id', targetUsecaseId);
 
         const uploadResponse = await apiPost<any[]>('/files/file_contents/upload', formData);
-        
+
         // Don't add PDF content immediately - wait for modal marker from backend
         // The modal marker will be created by the agent tool and will appear in polled history
         // This ensures correct timestamp ordering and consistency between streaming and reload
-        
+
         // Short-lived poll to confirm OCR read
         let attempts = 0;
         const checkOcr = async () => {
@@ -1025,7 +1062,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               }
               return;
             }
-          } catch {}
+          } catch { }
           attempts += 1;
           setTimeout(checkOcr, 1500);
         };
@@ -1043,12 +1080,12 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
           size: file.file.size
         }));
       }
-      
+
       // Route chat to Gemini conversation endpoint (not PF)
       await apiPost(`/usecases/${targetUsecaseId}/gemini-chat`, chatPayload);
       setStatus("In Progress");
       setWaitingForResponse(true); // Start waiting for response
-      
+
       // Notify the parent component that a message was sent to refresh the sidebar
       if (window.dispatchEvent) {
         window.dispatchEvent(new CustomEvent('chat-updated', { detail: { usecaseId: targetUsecaseId } }));
@@ -1184,7 +1221,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                   Start a chat to begin.
                 </p>
               </div>
-              
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mt-6 sm:mt-8">
                 <Card className="p-4 sm:p-5 md:p-6 hover:bg-card-hover transition-colors cursor-pointer border-border">
                   <FileText className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 text-primary mb-2 sm:mb-3" />
@@ -1193,7 +1230,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     Upload your Functional Specification Document for comprehensive test case generation
                   </p>
                 </Card>
-                
+
                 <Card className="p-4 sm:p-5 md:p-6 hover:bg-card-hover transition-colors cursor-pointer border-border">
                   <FileText className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 text-secondary mb-2 sm:mb-3" />
                   <h3 className="font-semibold text-card-foreground mb-1 sm:mb-2">Analyze CR</h3>
@@ -1211,15 +1248,15 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
             const groupedPdfs: Array<Array<{
               fileId: string;
               fileName: string;
-              pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+              pages: Array<{ page_number: number; markdown: string; is_completed: boolean }>;
               timestamp: Date;
             }>> = [];
-            
+
             const sortedPdfs = [...pdfContentMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
             const sortedRequirements = [...requirementsMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
             const sortedScenarios = [...scenariosMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
             const sortedTestCases = [...testCasesMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-            
+
             sortedPdfs.forEach((pdf) => {
               let addedToGroup = false;
               for (const group of groupedPdfs) {
@@ -1227,14 +1264,14 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 const minTime = Math.min(...groupTimestamps);
                 const maxTime = Math.max(...groupTimestamps);
                 const pdfTime = pdf.timestamp.getTime();
-                
+
                 if (Math.abs(pdfTime - minTime) <= 5000 || Math.abs(pdfTime - maxTime) <= 5000) {
                   group.push(pdf);
                   addedToGroup = true;
                   break;
                 }
               }
-              
+
               if (!addedToGroup) {
                 groupedPdfs.push([pdf]);
               }
@@ -1299,7 +1336,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
 
             if (expandedItem) {
               if (expandedItem.type === 'pdf-group') {
-                const pdfFiles = expandedItem.data as Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }>;
+                const pdfFiles = expandedItem.data as Array<{ fileId: string; fileName: string; pages: Array<{ page_number: number; markdown: string; is_completed: boolean }> }>;
                 return (
                   <PdfContentMessage
                     key={expandedMessageId}
@@ -1391,15 +1428,15 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 const groupedPdfs: Array<Array<{
                   fileId: string;
                   fileName: string;
-                  pages: Array<{page_number: number; markdown: string; is_completed: boolean}>;
+                  pages: Array<{ page_number: number; markdown: string; is_completed: boolean }>;
                   timestamp: Date;
                 }>> = [];
-                
+
                 const sortedPdfs = [...pdfContentMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 const sortedRequirements = [...requirementsMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 const sortedScenarios = [...scenariosMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
                 const sortedTestCases = [...testCasesMessages].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-                
+
                 sortedPdfs.forEach((pdf) => {
                   // Find a group where this PDF's timestamp is within 5 seconds of any PDF in the group
                   let addedToGroup = false;
@@ -1408,7 +1445,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     const minTime = Math.min(...groupTimestamps);
                     const maxTime = Math.max(...groupTimestamps);
                     const pdfTime = pdf.timestamp.getTime();
-                    
+
                     // Check if PDF is within 5 seconds (5000ms) of the group
                     if (Math.abs(pdfTime - minTime) <= 5000 || Math.abs(pdfTime - maxTime) <= 5000) {
                       group.push(pdf);
@@ -1416,18 +1453,18 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                       break;
                     }
                   }
-                  
+
                   // If not added to any group, create a new group
                   if (!addedToGroup) {
                     groupedPdfs.push([pdf]);
                   }
                 });
-                
+
                 // Create items for rendering: messages, grouped PDFs, requirements, scenarios, and test cases
                 const allItems: Array<{
                   type: 'message' | 'pdf-group' | 'requirements' | 'scenarios' | 'testcases';
                   timestamp: Date;
-                  data: Message | Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }> | Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }> | Array<{ id: string; display_id: number; scenario_name: string; scenario_description: string; scenario_id?: string; requirement_id: string; requirement_display_id: number; flows?: any[]; created_at?: string }> | Array<{ id: string; display_id: number; test_case: string; description?: string; flow?: string; requirementId?: string; scenarioId?: string; preConditions?: string[]; testData?: string[]; testSteps?: string[]; expectedResults?: string[]; postConditions?: string[]; risk_analysis?: string; requirement_category?: string; lens?: string; scenario_display_id?: number; scenario_name?: string; requirement_display_id?: number; created_at?: string }>;
+                  data: Message | Array<{ fileId: string; fileName: string; pages: Array<{ page_number: number; markdown: string; is_completed: boolean }> }> | Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }> | Array<{ id: string; display_id: number; scenario_name: string; scenario_description: string; scenario_id?: string; requirement_id: string; requirement_display_id: number; flows?: any[]; created_at?: string }> | Array<{ id: string; display_id: number; test_case: string; description?: string; flow?: string; requirementId?: string; scenarioId?: string; preConditions?: string[]; testData?: string[]; testSteps?: string[]; expectedResults?: string[]; postConditions?: string[]; risk_analysis?: string; requirement_category?: string; lens?: string; scenario_display_id?: number; scenario_name?: string; requirement_display_id?: number; created_at?: string }>;
                 }> = [
                   ...messages.map(m => ({ type: 'message' as const, timestamp: m.timestamp, data: m })),
                   ...groupedPdfs.map(group => ({
@@ -1444,18 +1481,18 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     timestamp: req.timestamp,
                     data: req.requirements
                   })),
-              ...sortedScenarios.map(scen => ({
-                type: 'scenarios' as const,
-                timestamp: scen.timestamp,
-                data: scen.scenarios
-              })),
-              ...sortedTestCases.map(tc => ({
-                type: 'testcases' as const,
-                timestamp: tc.timestamp,
-                data: tc.testCases
-              }))
-            ].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-                
+                  ...sortedScenarios.map(scen => ({
+                    type: 'scenarios' as const,
+                    timestamp: scen.timestamp,
+                    data: scen.scenarios
+                  })),
+                  ...sortedTestCases.map(tc => ({
+                    type: 'testcases' as const,
+                    timestamp: tc.timestamp,
+                    data: tc.testCases
+                  }))
+                ].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
                 // If allItems is empty but we have messages, ensure messages are shown
                 if (allItems.length === 0 && messages.length > 0) {
                   return messages.map((message) => (
@@ -1464,11 +1501,10 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                       className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
                     >
                       <div
-                        className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
-                          message.type === "user"
-                            ? "bg-chat-user border border-border ml-auto"
-                            : "bg-chat-assistant border border-border mr-auto"
-                        }`}
+                        className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${message.type === "user"
+                          ? "bg-chat-user border border-border ml-auto"
+                          : "bg-chat-assistant border border-border mr-auto"
+                          }`}
                       >
                         <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
                           {message.type === "assistant" ? (
@@ -1489,142 +1525,141 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                     </div>
                   ));
                 }
-                
+
                 try {
                   return allItems.map((item, idx) => {
-                  if (item.type === 'pdf-group') {
-                    const pdfFiles = item.data as Array<{ fileId: string; fileName: string; pages: Array<{page_number: number; markdown: string; is_completed: boolean}> }>;
-                    const messageId = `pdf-group-${idx}-${pdfFiles.map(f => f.fileId).join('-')}`;
-                    return (
-                      <PdfContentMessage
-                        key={messageId}
-                        files={pdfFiles}
-                        messageId={messageId}
-                        onExpand={setExpandedMessageId}
-                        isExpanded={expandedMessageId === messageId}
-                        onMinimize={() => setExpandedMessageId(null)}
-                      />
-                    );
-                  } else if (item.type === 'requirements') {
-                    const requirements = item.data as Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }>;
-                    const messageId = `requirements-${idx}-${requirements.map(r => r.id).join('-')}`;
-                    return (
-                      <RequirementsMessage
-                        key={messageId}
-                        requirements={requirements}
-                        usecaseId={usecaseId || ""}
-                        messageId={messageId}
-                        onExpand={setExpandedMessageId}
-                        isExpanded={expandedMessageId === messageId}
-                        onMinimize={() => setExpandedMessageId(null)}
-                      />
-                    );
-                  } else if (item.type === 'scenarios') {
-                    const scenarios = item.data as Array<{ id: string; display_id: number; scenario_name: string; scenario_description: string; scenario_id?: string; requirement_id: string; requirement_display_id: number; flows?: any[]; created_at?: string }>;
-                    const messageId = `scenarios-${idx}-${scenarios.map(s => s.id).join('-')}`;
-                    const isExpanded = expandedMessageId === messageId;
-                    return (
-                      <ScenariosMessage
-                        key={messageId}
-                        scenarios={scenarios}
-                        usecaseId={usecaseId || ""}
-                        messageId={messageId}
-                        onExpand={setExpandedMessageId}
-                        isExpanded={isExpanded}
-                        onMinimize={() => setExpandedMessageId(null)}
-                      />
-                    );
-                  } else if (item.type === 'testcases') {
-                    const testCases = item.data as Array<{
-                      id: string;
-                      display_id: number;
-                      test_case: string;
-                      description?: string;
-                      flow?: string;
-                      requirementId?: string;
-                      scenarioId?: string;
-                      preConditions?: string[];
-                      testData?: string[];
-                      testSteps?: string[];
-                      expectedResults?: string[];
-                      postConditions?: string[];
-                      risk_analysis?: string;
-                      requirement_category?: string;
-                      lens?: string;
-                      scenario_display_id?: number;
-                      scenario_name?: string;
-                      requirement_display_id?: number;
-                      created_at?: string;
-                    }>;
-                    const messageId = `testcases-${idx}-${testCases.map(tc => tc.id).join('-')}`;
-                    const isExpanded = expandedMessageId === messageId;
-                    return (
-                      <TestCasesMessage
-                        key={messageId}
-                        testCases={testCases}
-                        usecaseId={usecaseId || ""}
-                        messageId={messageId}
-                        onExpand={setExpandedMessageId}
-                        isExpanded={isExpanded}
-                        onMinimize={() => setExpandedMessageId(null)}
-                      />
-                    );
-                  } else {
-                    const message = item.data as Message;
-                    return (
-                      <div
-                        key={message.id}
-                        className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
-                      >
+                    if (item.type === 'pdf-group') {
+                      const pdfFiles = item.data as Array<{ fileId: string; fileName: string; pages: Array<{ page_number: number; markdown: string; is_completed: boolean }> }>;
+                      const messageId = `pdf-group-${idx}-${pdfFiles.map(f => f.fileId).join('-')}`;
+                      return (
+                        <PdfContentMessage
+                          key={messageId}
+                          files={pdfFiles}
+                          messageId={messageId}
+                          onExpand={setExpandedMessageId}
+                          isExpanded={expandedMessageId === messageId}
+                          onMinimize={() => setExpandedMessageId(null)}
+                        />
+                      );
+                    } else if (item.type === 'requirements') {
+                      const requirements = item.data as Array<{ id: string; name: string; description: string; requirement_entities?: any; created_at?: string }>;
+                      const messageId = `requirements-${idx}-${requirements.map(r => r.id).join('-')}`;
+                      return (
+                        <RequirementsMessage
+                          key={messageId}
+                          requirements={requirements}
+                          usecaseId={usecaseId || ""}
+                          messageId={messageId}
+                          onExpand={setExpandedMessageId}
+                          isExpanded={expandedMessageId === messageId}
+                          onMinimize={() => setExpandedMessageId(null)}
+                        />
+                      );
+                    } else if (item.type === 'scenarios') {
+                      const scenarios = item.data as Array<{ id: string; display_id: number; scenario_name: string; scenario_description: string; scenario_id?: string; requirement_id: string; requirement_display_id: number; flows?: any[]; created_at?: string }>;
+                      const messageId = `scenarios-${idx}-${scenarios.map(s => s.id).join('-')}`;
+                      const isExpanded = expandedMessageId === messageId;
+                      return (
+                        <ScenariosMessage
+                          key={messageId}
+                          scenarios={scenarios}
+                          usecaseId={usecaseId || ""}
+                          messageId={messageId}
+                          onExpand={setExpandedMessageId}
+                          isExpanded={isExpanded}
+                          onMinimize={() => setExpandedMessageId(null)}
+                        />
+                      );
+                    } else if (item.type === 'testcases') {
+                      const testCases = item.data as Array<{
+                        id: string;
+                        display_id: number;
+                        test_case: string;
+                        description?: string;
+                        flow?: string;
+                        requirementId?: string;
+                        scenarioId?: string;
+                        preConditions?: string[];
+                        testData?: string[];
+                        testSteps?: string[];
+                        expectedResults?: string[];
+                        postConditions?: string[];
+                        risk_analysis?: string;
+                        requirement_category?: string;
+                        lens?: string;
+                        scenario_display_id?: number;
+                        scenario_name?: string;
+                        requirement_display_id?: number;
+                        created_at?: string;
+                      }>;
+                      const messageId = `testcases-${idx}-${testCases.map(tc => tc.id).join('-')}`;
+                      const isExpanded = expandedMessageId === messageId;
+                      return (
+                        <TestCasesMessage
+                          key={messageId}
+                          testCases={testCases}
+                          usecaseId={usecaseId || ""}
+                          messageId={messageId}
+                          onExpand={setExpandedMessageId}
+                          isExpanded={isExpanded}
+                          onMinimize={() => setExpandedMessageId(null)}
+                        />
+                      );
+                    } else {
+                      const message = item.data as Message;
+                      return (
                         <div
-                          className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
-                            message.type === "user"
+                          key={message.id}
+                          className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
+                        >
+                          <div
+                            className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${message.type === "user"
                               ? "bg-chat-user border border-border ml-auto"
                               : "bg-chat-assistant border border-primary/30 mr-auto shadow-sm"
-                          }`}
-                        >
-                          {message.file && (
-                            <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-accent/50 border border-border">
-                              <FileText className="w-4 h-4 text-accent-foreground" />
-                              <span className="text-sm font-medium text-accent-foreground">
-                                {message.file.name}
-                              </span>
-                            </div>
-                          )}
-                          <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
-                            {message.type === "assistant" ? (
-                              <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[rehypeHighlight]}
-                              >
-                                {normalizeMarkdownText(message.content)}
-                              </ReactMarkdown>
-                            ) : (
-                              <>{message.content}</>
+                              }`}
+                          >
+                            {message.file && (
+                              <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-accent/50 border border-border">
+                                <FileText className="w-4 h-4 text-accent-foreground" />
+                                <span className="text-sm font-medium text-accent-foreground">
+                                  {message.file.name}
+                                </span>
+                              </div>
                             )}
-                          </div>
-                          {message.type === "assistant" && message.traces && (
-                            <ChatTrace traces={message.traces as any} />
-                          )}
-                          {message.hasPreview && (
-                            <Button
-                              onClick={() => handleOpenPreview(message.id)}
-                              variant="outline" 
-                              size="sm"
-                              className="mt-3 h-8 text-xs gap-2 hover:bg-gray-700 hover:text-gray-100"
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                              Open in Preview
-                            </Button>
-                          )}
-                          <div className="text-xs text-muted-foreground mt-2">
-                            {message.timestamp.toLocaleTimeString()}
+                            <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
+                              {message.type === "assistant" ? (
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkGfm]}
+                                  rehypePlugins={[rehypeHighlight]}
+                                >
+                                  {normalizeMarkdownText(message.content)}
+                                </ReactMarkdown>
+                              ) : (
+                                <>{message.content}</>
+                              )}
+                            </div>
+                            {message.type === "assistant" && message.traces && (
+                              <ChatTrace traces={message.traces as any} />
+                            )}
+                            {message.hasPreview && (
+                              <Button
+                                onClick={() => handleOpenPreview(message.id)}
+                                variant="outline"
+                                size="sm"
+                                className="mt-3 h-8 text-xs gap-2 hover:bg-gray-700 hover:text-gray-100"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                Open in Preview
+                              </Button>
+                            )}
+                            <div className="text-xs text-muted-foreground mt-2">
+                              {message.timestamp.toLocaleTimeString()}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  }
-                });
+                      );
+                    }
+                  });
                 } catch (error) {
                   // Fallback: render just messages if there's an error
                   return messages.map((message) => (
@@ -1633,11 +1668,10 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                       className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
                     >
                       <div
-                        className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
-                          message.type === "user"
-                            ? "bg-chat-user border border-border ml-auto"
-                            : "bg-chat-assistant border border-border mr-auto"
-                        }`}
+                        className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${message.type === "user"
+                          ? "bg-chat-user border border-border ml-auto"
+                          : "bg-chat-assistant border border-border mr-auto"
+                          }`}
                       >
                         <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
                           {message.type === "assistant" ? (
@@ -1659,19 +1693,19 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                   ));
                 }
               })()}
-              
+
               {isLoading && (
                 <div className="flex justify-start">
                   <div className="bg-chat-assistant border border-border rounded-xl p-4 mr-auto">
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" />
-                      <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{animationDelay: '0.1s'}} />
-                      <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{animationDelay: '0.2s'}} />
+                      <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }} />
+                      <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
                     </div>
                   </div>
                 </div>
               )}
-              
+
               {/* Empty div for scrolling to bottom */}
               <div ref={messagesEndRef} className="h-5 mb-20" />
             </div>
@@ -1693,8 +1727,8 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 ))}
               </div>
             )}
-            
-            <ChatInput 
+
+            <ChatInput
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onSend={handleSend}
@@ -1702,7 +1736,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               onKeyPress={handleKeyPress}
               isDisabled={status === "In Progress" || isLoading || reqGenConfirmOpen || scenarioGenConfirmOpen || testCaseGenConfirmOpen}
             />
-            
+
             <input
               ref={fileInputRef}
               type="file"

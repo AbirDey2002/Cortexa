@@ -25,6 +25,9 @@ class User(Base):
     
     # Soft delete flag
     is_deleted = Column(Boolean, default=False, nullable=False)
+    
+    # User Preferences
+    push_notification = Column(Boolean, default=True, nullable=False)
 
     def __repr__(self):
         return f"<User(id='{self.id}', email='{self.email}', name='{self.name}')>"

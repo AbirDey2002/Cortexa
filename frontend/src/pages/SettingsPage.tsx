@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,16 +10,69 @@ import { Bell, Shield, Key, Database, User, Save } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Layout } from "@/components/Layout";
 import { useAuth } from "@/contexts/AuthContext";
+import { useApi } from "@/lib/utils";
+import { requestNotificationPermission } from "@/lib/notifications";
 
 export default function SettingsPage() {
   const { userId: urlUserId } = useParams<{ userId: string }>();
   const { userId } = useAuth();
   const actualUserId = urlUserId || userId;
   const { toast } = useToast();
+  const { apiGet, apiPatch } = useApi();
+
   const [notifications, setNotifications] = useState(true);
   const [emailAlerts, setEmailAlerts] = useState(true);
   const [dataRetention, setDataRetention] = useState(true);
   const [apiKey, setApiKey] = useState("ck_••••••••••••••••••••••••");
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (actualUserId) {
+      loadSettings();
+    }
+  }, [actualUserId]);
+
+  const loadSettings = async () => {
+    try {
+      const user = await apiGet<any>(`/users/${actualUserId}`);
+      if (user) {
+        setNotifications(user.push_notification !== undefined ? user.push_notification : true);
+      }
+    } catch (error) {
+      console.error("Failed to load settings", error);
+    }
+  };
+
+  const handleNotificationChange = async (checked: boolean) => {
+    setNotifications(checked);
+    try {
+      if (checked) {
+        const granted = await requestNotificationPermission();
+        if (!granted) {
+          setNotifications(false);
+          toast({
+            title: "Permission denied",
+            description: "Please enable notifications in your browser settings.",
+            variant: "destructive"
+          });
+          return;
+        }
+      }
+
+      await apiPatch(`/users/${actualUserId}`, { push_notification: checked });
+      toast({
+        title: "Settings updated",
+        description: `Push notifications ${checked ? 'enabled' : 'disabled'}.`,
+      });
+    } catch (error) {
+      setNotifications(!checked); // Revert on error
+      toast({
+        title: "Error",
+        description: "Failed to update settings.",
+        variant: "destructive"
+      });
+    }
+  };
 
   const handleSave = () => {
     toast({
@@ -81,7 +134,7 @@ export default function SettingsPage() {
                   <Label>Push Notifications</Label>
                   <p className="text-sm text-muted-foreground">Receive notifications in the app</p>
                 </div>
-                <Switch checked={notifications} onCheckedChange={setNotifications} />
+                <Switch checked={notifications} onCheckedChange={handleNotificationChange} />
               </div>
               <Separator />
               <div className="flex items-center justify-between">

@@ -28,6 +28,7 @@ class UserUpdate(BaseModel):
     email: str | None = None
     name: str | None = None
     password: str | None = None
+    push_notification: bool | None = None
 
 
 class UserLogin(BaseModel):
@@ -40,6 +41,7 @@ class UserResponse(BaseModel):
     email: str
     name: str | None = None
     profile_image_url: str | None = None
+    push_notification: bool
 
     class Config:
         from_attributes = True
@@ -432,6 +434,9 @@ def update_user(user_id: uuid.UUID, payload: UserUpdate, db: Session = Depends(g
         user.name = payload.name
     if payload.password is not None:
         user.password = pwd_context.hash(payload.password)
+    # Handle push_notification update
+    if payload.push_notification is not None:
+        user.push_notification = payload.push_notification
     db.commit()
     db.refresh(user)
     return user
