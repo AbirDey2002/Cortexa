@@ -66,6 +66,57 @@ Cortexa/
 - **Python** 3.11+
 - **PostgreSQL** 13+
 - **Docker** (optional)
+- **Linux Environment** (Recommended for Docker host networking)
+
+## 🐳 Docker Deployment
+
+The application is fully containerized. Follow these steps to deploy.
+
+### 1. Backend Service (Port 8000)
+
+The backend determines it's in a Docker environment via the `RUN_MODE=docker` env var (set automatically in Dockerfile) and connects to the host database via `host.docker.internal`.
+
+```bash
+cd backend
+
+# Clean build
+docker build -t cortexa-backend .
+
+# Run container (network=host required on Linux for host.docker.internal)
+docker run -d \
+  -p 8000:8000 \
+  --env-file .env \
+  --add-host=host.docker.internal:host-gateway \
+  --name cortexa-backend-container \
+  cortexa-backend
+```
+
+### 2. Frontend Service (Port 8080)
+
+The frontend requires environment variables to be baked in at build time.
+
+```bash
+cd frontend
+
+# 1. Export env vars so Docker can see them
+export $(grep -v '^#' .env | xargs)
+
+# 2. Build image with args
+docker build \
+  --build-arg VITE_AUTH0_DOMAIN=$VITE_AUTH0_DOMAIN \
+  --build-arg VITE_AUTH0_CLIENT_ID=$VITE_AUTH0_CLIENT_ID \
+  --build-arg VITE_AUTH0_AUDIENCE=$VITE_AUTH0_AUDIENCE \
+  --build-arg VITE_BACKEND_URL=$VITE_BACKEND_URL \
+  -t cortexa-frontend-app .
+
+# 3. Run container on port 8080
+docker run -d \
+  -p 8080:80 \
+  --name cortexa-frontend \
+  cortexa-frontend-app
+```
+
+> **Note:** Ensure your Auth0 Application defaults (`Allowed Callback URLs`, `Allowed Web Origins`) match `http://localhost:8080`.
 
 ## 🚨 Important Notice
 

@@ -13,12 +13,12 @@ Your task is to generate a concise, descriptive name for a usecase based on the 
 
 **NAMING GUIDELINES:**
 1. Extract the main topic, subject, or focus from the conversation
-2. Keep the name concise: 0-15 words (can be as short as a single word or phrase)
+2. Create a descriptive phrase of 3-8 words. Avoid single-word names.
 3. Make it descriptive and professional
-4. Focus on the primary subject matter or goal of the conversation
-5. Avoid generic terms like "Chat", "Conversation", "Document" unless necessary
+4. Focus on the specific goal or context (e.g., "Debugging Python Login Connection Error" instead of just "Login Error")
+5. Avoid generic terms like "Chat", "Conversation", "Document", "Help".
 6. Use title case (capitalize important words)
-7. The name should reflect what the user is asking about or working on
+7. The name should tell a short story about the user's intent.
 
 **EXAMPLES:**
 - User: "I want to test the login functionality" 
@@ -51,12 +51,13 @@ Your task is to generate a concise, descriptive name for a usecase based on the 
 
 **NAMING GUIDELINES:**
 1. Extract the main topic, title, or subject from the document
-2. If the document has a clear title, use it (shortened if needed)
-3. If no clear title, identify the primary subject matter
-4. Keep the name concise: 0-15 words (can be as short as a single word or phrase)
+2. If the document has a clear title, use it (shortened if needed but keep it descriptive)
+3. If no clear title, identify the primary subject matter and create a 3-8 word descriptive phrase.
+4. Avoid single words or very short 2-word names.
 5. Make it descriptive and professional
-6. Focus on what the document is about (e.g., "User Authentication Spec", "Project Proposal", "Research Paper")
-7. Use title case (capitalize important words)
+6. **CRITICAL:** DO NOT use the name "Document", "PDF", or "File". You MUST be specific about the content.
+7. Focus on what the document is about (e.g., "User Authentication System Specification", "Q3 Financial Project Proposal", "Clinical Research Findings Analysis")
+8. Use title case (capitalize important words)
 
 **EXAMPLES:**
 - Document about login system → "User Login System Specification"
@@ -74,4 +75,3 @@ User Authentication System Specification
 # Export prompts
 conversation_naming_prompt = CONVERSATION_NAMING_PROMPT
 document_naming_prompt = DOCUMENT_NAMING_PROMPT
-

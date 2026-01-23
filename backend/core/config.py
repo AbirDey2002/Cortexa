@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 from .env_config import (
     get_database_config,
     get_azure_config,
@@ -61,6 +62,15 @@ class Settings(BaseSettings):
     DB_PORT: str = _db_config["DB_PORT"]
     DB_NAME: str = _db_config["DB_NAME"]
     DB_SSL_MODE: str = _db_config.get("DB_SSL_MODE", "disable")
+
+    @model_validator(mode="after")
+    def adjust_host_for_docker(self) -> "Settings":
+        # Check RUN_MODE
+        run_mode = os.getenv("RUN_MODE", "local").lower()
+        # print(f"DEBUG: Model Validator called. HOST={self.DB_HOST}, RUN_MODE={run_mode}")
+        if run_mode == "docker" and self.DB_HOST in ("localhost", "127.0.0.1", "0.0.0.0"):
+             self.DB_HOST = "host.docker.internal"
+        return self
 
     # PF removed
 

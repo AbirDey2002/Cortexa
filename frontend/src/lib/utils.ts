@@ -14,7 +14,7 @@ export async function apiGetBase<T>(path: string, headers?: Record<string, strin
   const res = await fetch(`${API_BASE_URL}${path}`, {
     headers: headers || {},
   });
-  
+
   if (!res.ok) throw new Error(`GET ${path} failed`);
   return res.json();
 }
@@ -24,21 +24,36 @@ export async function apiPostBase<T>(
   body?: any,
   headers?: Record<string, string>
 ): Promise<T> {
+  return apiRequestBase<T>('POST', path, body, headers);
+}
+
+export async function apiPatchBase<T>(
+  path: string,
+  body?: any,
+  headers?: Record<string, string>
+): Promise<T> {
+  return apiRequestBase<T>('PATCH', path, body, headers);
+}
+
+async function apiRequestBase<T>(
+  method: string,
+  path: string,
+  body?: any,
+  headers?: Record<string, string>
+): Promise<T> {
   const isFormData = body instanceof FormData;
-  
+
   const config: RequestInit = {
-    method: 'POST',
+    method,
     body: isFormData ? body : (body ? JSON.stringify(body) : undefined),
   };
 
-  // Set headers if not FormData (FormData sets its own Content-Type with boundary)
   if (!isFormData) {
     config.headers = {
       'Content-Type': 'application/json',
       ...headers
     };
   } else if (headers) {
-    // For FormData, only add non-Content-Type headers
     const nonContentTypeHeaders = Object.fromEntries(
       Object.entries(headers).filter(([key]) => key.toLowerCase() !== 'content-type')
     );
@@ -48,7 +63,7 @@ export async function apiPostBase<T>(
   }
 
   const res = await fetch(`${API_BASE_URL}${path}`, config);
-  if (!res.ok) throw new Error(`POST ${path} failed`);
+  if (!res.ok) throw new Error(`${method} ${path} failed`);
   return res.json();
 }
 
@@ -58,7 +73,7 @@ export function useApi() {
 
   const apiGet = useCallback(async <T,>(path: string): Promise<T> => {
     const headers: Record<string, string> = {};
-    
+
     // Add JWT token if authenticated
     if (isAuthenticated) {
       try {
@@ -73,7 +88,7 @@ export function useApi() {
     const res = await fetch(`${API_BASE_URL}${path}`, {
       headers,
     });
-    
+
     if (!res.ok) {
       // Handle 401 by attempting token refresh
       if (res.status === 401 && isAuthenticated) {
@@ -92,19 +107,20 @@ export function useApi() {
       }
       throw new Error(`GET ${path} failed`);
     }
-    
+
     return res.json();
   }, [isAuthenticated, getAccessTokenSilently]);
 
-  const apiPost = useCallback(async <T,>(
+  const apiRequest = useCallback(async <T,>(
+    method: string,
     path: string,
     body?: any,
     extraHeaders?: Record<string, string>
   ): Promise<T> => {
     const isFormData = body instanceof FormData;
-    
+
     const config: RequestInit = {
-      method: 'POST',
+      method,
       body: isFormData ? body : (body ? JSON.stringify(body) : undefined),
     };
 
@@ -139,7 +155,7 @@ export function useApi() {
     }
 
     const res = await fetch(`${API_BASE_URL}${path}`, config);
-    
+
     if (!res.ok) {
       // Handle 401 by attempting token refresh
       if (res.status === 401 && isAuthenticated) {
@@ -152,19 +168,35 @@ export function useApi() {
               (retryConfig.headers as Record<string, string>).Authorization = `Bearer ${token}`;
             }
             const retryRes = await fetch(`${API_BASE_URL}${path}`, retryConfig);
-            if (!retryRes.ok) throw new Error(`POST ${path} failed`);
+            if (!retryRes.ok) throw new Error(`${method} ${path} failed`);
             return retryRes.json();
           }
         } catch (error) {
         }
       }
-      throw new Error(`POST ${path} failed`);
+      throw new Error(`${method} ${path} failed`);
     }
-    
+
     return res.json();
   }, [isAuthenticated, getAccessTokenSilently]);
 
-  return { apiGet, apiPost };
+  const apiPost = useCallback(async <T,>(
+    path: string,
+    body?: any,
+    extraHeaders?: Record<string, string>
+  ): Promise<T> => {
+    return apiRequest<T>('POST', path, body, extraHeaders);
+  }, [apiRequest]);
+
+  const apiPatch = useCallback(async <T,>(
+    path: string,
+    body?: any,
+    extraHeaders?: Record<string, string>
+  ): Promise<T> => {
+    return apiRequest<T>('PATCH', path, body, extraHeaders);
+  }, [apiRequest]);
+
+  return { apiGet, apiPost, apiPatch };
 }
 
 // Legacy exports for backward compatibility (will be deprecated)

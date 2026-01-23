@@ -740,7 +740,9 @@ def tool_show_extracted_text(file_id: str = None, file_name: str = None, usecase
             "status": "success",
             "message": f"PDF content for '{file_metadata.file_name}' will be displayed above.",
             "file_id": str(file_uuid),
-            "file_name": file_metadata.file_name
+            "file_name": file_metadata.file_name,
+            # Return preview text for "auto" functionality that expects text in tool output
+            "extracted_text_preview": (ocr_info.pages_json.get("1", "") if ocr_info.pages_json else "")[:3000] if ocr_info else ""
         }
 
 
@@ -1052,32 +1054,26 @@ def tool_show_scenarios(usecase_id: UUID) -> Dict[str, Any]:
         }
 
 
-def tool_read_extracted_text(file_id: str) -> Dict[str, Any]:
-    """Read full OCR text from database. Returns complete, non-truncated text for agent analysis."""
+def tool_read_extracted_text(file_name: str, usecase_id: UUID) -> Dict[str, Any]:
+    """Read full OCR text from database by file_name. Returns complete, non-truncated text for agent analysis."""
+    # Note: agents might pass usecase_id as string/UUID, agent runner handles basic type casting if typed correctly in definition.
+    # But safe to ensure:
     try:
-        file_uuid = UUID(file_id) if isinstance(file_id, str) else file_id
-    except (ValueError, TypeError):
-        return {"error": "invalid_file_id", "message": f"Invalid file_id format: {file_id}"}
-    
+        if not usecase_id:
+             return {"error": "missing_parameter", "message": "usecase_id is required"}
+    except Exception:
+         pass
+         
     with get_db_context() as db:
-        # Get file metadata
-        file_metadata = db.query(FileMetadata).filter(
-            FileMetadata.file_id == file_uuid
-        ).first()
-        
-        if not file_metadata:
-            logger.warning(_color(f"[READ-EXTRACTED-TEXT] file not found: {file_id}", "31"))
-            return {"error": "file_not_found", "message": f"File with id {file_id} not found"}
-        
-        # Check if text extraction is completed for the usecase
+        # Verify usecase exists
         usecase = db.query(UsecaseMetadata).filter(
-            UsecaseMetadata.usecase_id == file_metadata.usecase_id,
+            UsecaseMetadata.usecase_id == usecase_id,
             UsecaseMetadata.is_deleted == False,
         ).first()
         
         if not usecase:
             return {"error": "usecase_not_found"}
-        
+            
         text_extraction_status = usecase.text_extraction or "Not Started"
         if text_extraction_status != "Completed":
             return {
@@ -1085,6 +1081,37 @@ def tool_read_extracted_text(file_id: str) -> Dict[str, Any]:
                 "message": f"Text extraction is '{text_extraction_status}'. Please wait for OCR to complete.",
                 "text_extraction": text_extraction_status
             }
+            
+        # Find file by name (Priority: Exact match > Partial match > Most recent fallback?)
+        # Let's be stricter than show_extracted_text: if they asked for a specific file to READ, they likely mean it.
+        # But fuzzy match is helpful for "resume" -> "Ashish Resume.pdf"
+        
+        # 1. Exact match
+        file_metadata = db.query(FileMetadata).join(
+            OCRInfo, FileMetadata.file_id == OCRInfo.file_id
+        ).filter(
+            FileMetadata.usecase_id == usecase_id,
+            FileMetadata.is_deleted == False,
+            FileMetadata.file_name.ilike(file_name)
+        ).order_by(FileMetadata.created_at.desc()).first()
+        
+        # 2. Partial match
+        if not file_metadata:
+            file_metadata = db.query(FileMetadata).join(
+                OCRInfo, FileMetadata.file_id == OCRInfo.file_id
+            ).filter(
+                FileMetadata.usecase_id == usecase_id,
+                FileMetadata.is_deleted == False,
+                FileMetadata.file_name.ilike(f"%{file_name}%")
+            ).order_by(FileMetadata.created_at.desc()).first()
+            
+        if not file_metadata:
+             return {
+                 "error": "file_not_found", 
+                 "message": f"No file found matching '{file_name}' with extracted text in this usecase."
+             }
+             
+        file_uuid = file_metadata.file_id
         
         # Get OCR info first (prefer pages_json)
         ocr_info = db.query(OCRInfo).filter(OCRInfo.file_id == file_uuid).first()
@@ -1121,7 +1148,7 @@ def tool_read_extracted_text(file_id: str) -> Dict[str, Any]:
         
         total_chars = len(combined_markdown)
         logger.info(_color(
-            f"[READ-EXTRACTED-TEXT] file_id={file_id} file_name={file_metadata.file_name} "
+            f"[READ-EXTRACTED-TEXT] file_name_query='{file_name}' matched='{file_metadata.file_name}' "
             f"total_pages={len(pages)} total_chars={total_chars}",
             "34"
         ))
@@ -2244,7 +2271,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def read_extracted_text(file_id: str) -> Dict[str, Any]:
+    async def read_extracted_text(file_name: str) -> Dict[str, Any]:
         """
         Read full OCR text from database for agent analysis.
         Call when user asks questions about document content and you need to read the OCR text to answer.
@@ -2254,17 +2281,17 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
         Use this text to answer user's question, but do NOT include the full text in your response.
         """
         name = "read_extracted_text"
-        entry = tracer.start_tool(name, args_preview=f'{{"file_id": "{file_id}"}}')
+        entry = tracer.start_tool(name, args_preview=f'{{"file_name": "{file_name}"}}')
         start = time.time()
-        logger.info(_color(f"[TOOL-START {name}] file_id={file_id} usecase_id={usecase_id}", "34"))
+        logger.info(_color(f"[TOOL-START {name}] file_name={file_name} usecase_id={usecase_id}", "34"))
         try:
-            result = await asyncio.to_thread(tool_read_extracted_text, file_id)
+            result = await asyncio.to_thread(tool_read_extracted_text, file_name, usecase_id)
             total_chars = result.get("total_chars", 0)
             pages_count = result.get("total_pages", 0)
             file_name_str = result.get("file_name", "N/A")
             duration_ms = int((time.time() - start) * 1000)
             # Log truncated version for performance, but return full to agent
-            tracer.finish_tool(entry, True, result_preview=f"file_id={file_id} file_name={file_name_str} pages={pages_count} chars={total_chars}", duration_ms=duration_ms, chars_read=total_chars)
+            tracer.finish_tool(entry, True, result_preview=f"file_name={file_name_str} pages={pages_count} chars={total_chars}", duration_ms=duration_ms, chars_read=total_chars)
             try:
                 import json as _json
                 # Log truncated version

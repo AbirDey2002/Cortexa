@@ -40,7 +40,9 @@ export function SlidingName({ name, maxChars = 30, className = "" }: SlidingName
       const elapsed = timestamp - startTimeRef.current;
       const totalDuration = 4000; // 4 seconds for full cycle (2s forward, 2s backward)
       const halfDuration = totalDuration / 2;
-      const maxOffset = name.length - maxChars;
+      // Add a buffer to ensure the last few characters are fully visible even if container clips
+      const buffer = 10;
+      const maxOffset = Math.max(0, name.length - maxChars + buffer);
 
       let progress: number;
       if (elapsed < halfDuration) {

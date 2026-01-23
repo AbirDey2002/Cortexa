@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { Plus, MessageSquare, Settings, HelpCircle, Menu } from "lucide-react";
+import { Plus, MessageSquare, Settings, HelpCircle, Menu, Pencil, Check, X } from "lucide-react";
 import {
   SidebarContent,
   SidebarGroup,
@@ -39,11 +39,13 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
   const [selectedChat, setSelectedChat] = useState<string | null>(activeUsecaseId);
   const [usecases, setUsecases] = useState<UsecaseListItem[]>([]);
   const isCollapsed = state === "collapsed";
-  const { apiGet, apiPost } = useApi();
-  
+  const { apiGet, apiPost, apiPatch } = useApi();
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
   // Reference to track if we need to apply animation
   const animatingItemRef = useRef<string | null>(null);
-  
+
   // Track naming state for both Stage 1 (conversation-based) and Stage 2 (document-based)
   const namingStateRef = useRef<Map<string, {
     // Stage 1 (conversation-based)
@@ -60,7 +62,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
       startTime: number;
     } | null;
   }>>(new Map());
-  
+
   // Separate interval refs for Stage 1 and Stage 2 polling
   const stage1PollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const stage2PollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -70,14 +72,14 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
     if (!userId) return;
     try {
       const usecases = await apiGet<UsecaseListItem[]>(`/frontend/usecases/list`);
-      
+
       // Sort usecases by updated_at timestamp (most recent first)
       const sortedUsecases = [...usecases].sort((a, b) => {
         const dateA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
         const dateB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
         return dateB - dateA; // Descending order (newest first)
       });
-      
+
       // Check if the active usecase has moved position (for animation)
       if (activeUsecaseId) {
         const oldIndex = usecases.findIndex(u => u.usecase_id === activeUsecaseId);
@@ -86,9 +88,9 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
           animatingItemRef.current = activeUsecaseId;
         }
       }
-      
+
       setUsecases(sortedUsecases);
-      
+
       // Update selected chat if activeUsecaseId changes
       if (activeUsecaseId && sortedUsecases.some(u => u.usecase_id === activeUsecaseId)) {
         setSelectedChat(activeUsecaseId);
@@ -96,12 +98,12 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
     } catch (e) {
     }
   }, [userId, activeUsecaseId, apiGet]);
-  
+
   // Initial fetch on mount and when userId/activeUsecaseId changes
   useEffect(() => {
     fetchUsecases();
   }, [fetchUsecases]);
-  
+
   // Listen for chat updates to refresh the sidebar
   useEffect(() => {
     const handleChatUpdate = (event: Event) => {
@@ -112,27 +114,27 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
         setUsecases(prevUsecases => {
           const usecaseId = customEvent.detail.usecaseId;
           const usecase = prevUsecases.find(u => u.usecase_id === usecaseId);
-          
+
           if (usecase) {
             // Create a copy of the usecase with updated timestamp
             const updatedUsecase = {
               ...usecase,
               updated_at: new Date().toISOString()
             };
-            
+
             // Remove the usecase from the list and add it to the top
             const filteredUsecases = prevUsecases.filter(u => u.usecase_id !== usecaseId);
             animatingItemRef.current = usecaseId; // Set for animation
-            
+
             // Return the updated list with the usecase at the top
             return [updatedUsecase, ...filteredUsecases];
           }
-          
+
           return prevUsecases;
         });
       }
     };
-    
+
     window.addEventListener('chat-updated', handleChatUpdate);
     return () => {
       window.removeEventListener('chat-updated', handleChatUpdate);
@@ -318,7 +320,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
     if (usecase) {
       const currentState = namingStateRef.current.get(activeUsecaseId);
       const stage2State = currentState?.stage2;
-      
+
       // If we have Stage 2 state and the name has changed from initialName, stop polling
       if (stage2State && usecase.usecase_name !== stage2State.initialName) {
         // Name already changed - stop polling and clean up
@@ -401,17 +403,17 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
             pollCount = 0; // Reset poll count for new polling session
             // Store the initial name in a closure to ensure we always have the correct reference
             const storedInitialName = finalStage2State.initialName;
-            
+
             stage2PollIntervalRef.current = setInterval(async () => {
               // First check: Verify we still have state and should be polling
               // Also check if interval ref still exists (might have been cleared)
               if (!stage2PollIntervalRef.current) {
                 return;
               }
-              
+
               const currentState = namingStateRef.current.get(activeUsecaseId);
               const stage2State = currentState?.stage2;
-              
+
               // If state was cleaned up, stop immediately
               if (!stage2State) {
                 if (stage2PollIntervalRef.current) {
@@ -449,12 +451,12 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
                   // Check if name changed from the name stored when Stage 2 polling started
                   // Use both the stored initialName and current state for comparison
                   const nameChanged = updatedUsecase.usecase_name !== storedInitialName;
-                  
+
                   if (nameChanged) {
                     // Name changed - Stage 2 naming completed
                     // CRITICAL: Stop polling and clean up state BEFORE updating usecases
                     // This prevents useEffect from re-running and restarting polling
-                    
+
                     // Stop polling immediately - clear interval first
                     const intervalId = stage2PollIntervalRef.current;
                     if (intervalId) {
@@ -470,14 +472,14 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
                         stage2: null,
                       });
                     }
-                    
+
                     // Now update usecases - this will trigger useEffect re-run, but state is already cleaned up
                     setUsecases(prev => prev.map(u =>
                       u.usecase_id === activeUsecaseId
                         ? { ...u, usecase_name: updatedUsecase.usecase_name }
                         : u
                     ));
-                    
+
                     return;
                   }
 
@@ -544,14 +546,14 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
       // Get the current count of chats to name this one appropriately
       const chatCount = usecases.length + 1;
       const chatName = `Chat ${chatCount}`;
-      
+
       const payload = { user_id: userId, usecase_name: chatName, email: "abir.dey@intellectdesign.com" };
       const record = await apiPost<UsecaseListItem>("/usecases", payload);
-      
+
       // Refresh the list of usecases after creating a new one
       const updatedUsecases = await apiGet<UsecaseListItem[]>(`/frontend/usecases/list`);
       setUsecases(updatedUsecases);
-      
+
       // Select the new usecase
       setSelectedChat(record.usecase_id);
       onNewUsecase(record.usecase_id);
@@ -560,195 +562,245 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
   };
 
   const handleChatSelect = (chatId: string) => {
+    // Don't select if we're editing
+    if (editingId) return;
     setSelectedChat(chatId);
     onSelectUsecase(chatId);
+  };
+
+  const handleUpdateName = async (id: string) => {
+    if (!editingName.trim()) {
+      setEditingId(null);
+      return;
+    }
+
+    try {
+      await apiPatch(`/usecases/${id}`, { usecase_name: editingName.trim() });
+      setUsecases(prev =>
+        prev.map(u => u.usecase_id === id ? { ...u, usecase_name: editingName.trim() } : u)
+      );
+    } catch (e) {
+      console.error("Failed to update usecase name", e);
+    } finally {
+      setEditingId(null);
+    }
   };
 
   return (
     <TooltipProvider>
       <SidebarContent className="p-2 xs:p-3 sm:p-4 flex flex-col h-full">
-          {/* Header with toggle and new chat */}
-          <div className="flex items-center justify-between mb-3 sm:mb-6">
-            {!isCollapsed && (
-              <h2 className="text-base sm:text-lg font-bold text-sidebar-foreground truncate">Cortexa</h2>
-            )}
-            <SidebarTrigger className="p-1 sm:p-2 hover:bg-sidebar-accent rounded-md sm:rounded-lg transition-colors">
-              <Menu className="h-4 w-4" />
-            </SidebarTrigger>
-          </div>
-
-          {/* New Chat Button */}
-          <div className="mb-2">
-            {isCollapsed ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    onClick={handleNewChat}
-                    variant="ghost"
-                    size="sm"
-                    className="w-full text-white hover:text-glow border-0 px-2 transition-all duration-200"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="right">
-                  <p>New Chat</p>
-                </TooltipContent>
-              </Tooltip>
-            ) : (
-              <Button
-                onClick={handleNewChat}
-                variant="ghost"
-                size="default"
-                className="w-full text-white hover:text-glow border-0 px-4 transition-all duration-200"
-              >
-                <Plus className="h-4 w-4" />
-                <span className="ml-2">New Chat</span>
-              </Button>
-            )}
-          </div>
-          
-          {/* Separator with line and text */}
+        {/* Header with toggle and new chat */}
+        <div className="flex items-center justify-between mb-3 sm:mb-6">
           {!isCollapsed && (
-            <div className="flex items-center mb-4 mt-2">
-              <div className="flex-grow h-px bg-sidebar-border"></div>
-            </div>
+            <h2 className="text-base sm:text-lg font-bold text-sidebar-foreground truncate">Cortexa</h2>
           )}
+          <SidebarTrigger className="p-1 sm:p-2 hover:bg-sidebar-accent rounded-md sm:rounded-lg transition-colors">
+            <Menu className="h-4 w-4" />
+          </SidebarTrigger>
+        </div>
 
-          {/* Recent Chats - Now with flex-grow to take available space */}
-          <SidebarGroup className="flex-grow overflow-hidden flex flex-col min-h-0">
-            {!isCollapsed && (
-              <SidebarGroupLabel className="text-sidebar-foreground/70 text-sm font-medium mb-3">
-                Recent
-              </SidebarGroupLabel>
-            )}
-            <SidebarGroupContent className="flex-grow overflow-hidden">
-              <ScrollArea className="h-full">
-                <SidebarMenu className="space-y-1">
-                  {usecases.map((chat) => (
-                    <SidebarMenuItem key={chat.usecase_id}>
-                      {isCollapsed ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <SidebarMenuButton
-                              asChild
-                              className={`w-full p-2 rounded-lg transition-all cursor-pointer justify-center ${
-                                selectedChat === chat.usecase_id
-                                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                  : "hover:bg-sidebar-accent/50 text-sidebar-foreground"
-                              }`}
-                            >
-                              <div onClick={() => handleChatSelect(chat.usecase_id)}>
-                                <MessageSquare className="h-4 w-4" />
-                              </div>
-                            </SidebarMenuButton>
-                          </TooltipTrigger>
-                          <TooltipContent side="right">
-                            <p className="max-w-xs break-words">{chat.usecase_name}</p>
-                          </TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        <SidebarMenuButton
-                          asChild
-                          className={`w-full p-4 rounded-lg transition-all cursor-pointer ${
-                            selectedChat === chat.usecase_id
+        {/* New Chat Button */}
+        <div className="mb-2">
+          {isCollapsed ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={handleNewChat}
+                  variant="ghost"
+                  size="sm"
+                  className="w-full text-white hover:text-glow border-0 px-2 transition-all duration-200"
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>New Chat</p>
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <Button
+              onClick={handleNewChat}
+              variant="ghost"
+              size="default"
+              className="w-full text-white hover:text-glow border-0 px-4 transition-all duration-200"
+            >
+              <Plus className="h-4 w-4" />
+              <span className="ml-2">New Chat</span>
+            </Button>
+          )}
+        </div>
+
+        {/* Separator with line and text */}
+        {!isCollapsed && (
+          <div className="flex items-center mb-4 mt-2">
+            <div className="flex-grow h-px bg-sidebar-border"></div>
+          </div>
+        )}
+
+        {/* Recent Chats - Now with flex-grow to take available space */}
+        <SidebarGroup className="flex-grow overflow-hidden flex flex-col min-h-0">
+          {!isCollapsed && (
+            <SidebarGroupLabel className="text-sidebar-foreground/70 text-sm font-medium mb-3">
+              Recent
+            </SidebarGroupLabel>
+          )}
+          <SidebarGroupContent className="flex-grow overflow-hidden">
+            <ScrollArea className="h-full">
+              <SidebarMenu className="space-y-1 pr-3">
+                {usecases.map((chat) => (
+                  <SidebarMenuItem key={chat.usecase_id}>
+                    {isCollapsed ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <SidebarMenuButton
+                            asChild
+                            className={`w-full p-2 rounded-lg transition-all cursor-pointer justify-center ${selectedChat === chat.usecase_id
                               ? "bg-sidebar-accent text-sidebar-accent-foreground"
                               : "hover:bg-sidebar-accent/50 text-sidebar-foreground"
-                          } ${
-                            animatingItemRef.current === chat.usecase_id ? "animate-slide-up" : ""
+                              }`}
+                          >
+                            <div onClick={() => handleChatSelect(chat.usecase_id)}>
+                              <MessageSquare className="h-4 w-4" />
+                            </div>
+                          </SidebarMenuButton>
+                        </TooltipTrigger>
+                        <TooltipContent side="right">
+                          <p className="max-w-xs break-words">{chat.usecase_name}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <SidebarMenuButton
+                        asChild
+                        className={`w-full p-4 rounded-lg transition-all cursor-pointer ${selectedChat === chat.usecase_id
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                          : "hover:bg-sidebar-accent/50 text-sidebar-foreground"
+                          } ${animatingItemRef.current === chat.usecase_id ? "animate-slide-up" : ""
                           }`}
+                      >
+                        <div
+                          className="flex items-center w-44 group/item relative pr-1"
+                          onAnimationEnd={() => {
+                            if (animatingItemRef.current === chat.usecase_id) {
+                              animatingItemRef.current = null;
+                            }
+                          }}
                         >
-                          <div 
-                            onClick={() => handleChatSelect(chat.usecase_id)} 
-                            className="flex items-center"
-                            onAnimationEnd={() => {
-                              if (animatingItemRef.current === chat.usecase_id) {
-                                animatingItemRef.current = null;
+                          <div
+                            className="flex-shrink-0 mr-3 cursor-pointer"
+                            onClick={(e) => {
+                              // If editing, don't trigger anything.
+                              // If not editing, the icon click triggers edit mode.
+                              if (!editingId) {
+                                e.stopPropagation();
+                                setEditingId(chat.usecase_id);
+                                setEditingName(chat.usecase_name);
                               }
                             }}
                           >
-                            <MessageSquare className="h-4 w-4 flex-shrink-0" />
-                            <div className="flex-1 min-w-0 ml-3 overflow-hidden">
+                            {/* Show MessageSquare by default, hide on hover. Show Pencil on hover. */}
+                            <MessageSquare className="h-4 w-4 group-hover/item:hidden" />
+                            <Pencil className="h-4 w-4 hidden group-hover/item:block text-sidebar-foreground/70 hover:text-sidebar-foreground" />
+                          </div>
+
+                          <div
+                            onClick={() => handleChatSelect(chat.usecase_id)}
+                            className="flex-1 min-w-0 overflow-hidden"
+                          >
+                            {editingId === chat.usecase_id ? (
+                              <input
+                                autoFocus
+                                className="bg-transparent border-none outline-none text-sm font-medium w-full text-sidebar-accent-foreground"
+                                value={editingName}
+                                onChange={(e) => setEditingName(e.target.value)}
+                                onBlur={() => handleUpdateName(chat.usecase_id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleUpdateName(chat.usecase_id);
+                                  if (e.key === 'Escape') setEditingId(null);
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            ) : (
                               <SlidingName
                                 name={chat.usecase_name}
-                                maxChars={30}
-                                className="text-sm font-medium"
+                                maxChars={15}
+                                className="text-sm font-medium block"
                               />
-                            </div>
+                            )}
                           </div>
-                        </SidebarMenuButton>
-                      )}
-                    </SidebarMenuItem>
-                  ))}
-                </SidebarMenu>
-              </ScrollArea>
-            </SidebarGroupContent>
-          </SidebarGroup>
+                        </div>
+                      </SidebarMenuButton>
+                    )}
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </ScrollArea>
+          </SidebarGroupContent>
+        </SidebarGroup>
 
-          {/* Settings & Help - Bottom Section - Now fixed at bottom */}
-          <div className="pt-4 mt-2">
-            <SidebarMenu className="space-y-1">
-              <SidebarMenuItem>
-                {isCollapsed ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <SidebarMenuButton 
-                        asChild
-                        className="hover:bg-sidebar-accent text-sidebar-foreground p-2 rounded-lg transition-colors justify-center"
-                      >
-                        <Link to={`/user/${userId}/settings`}>
-                          <Settings className="h-4 w-4" />
-                        </Link>
-                      </SidebarMenuButton>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">
-                      <p>Settings</p>
-                    </TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <SidebarMenuButton 
-                    asChild
-                    className="hover:bg-sidebar-accent text-sidebar-foreground p-3 rounded-lg transition-colors"
-                  >
-                    <Link to={`/user/${userId}/settings`}>
-                      <Settings className="h-4 w-4" />
-                      <span className="ml-3">Settings</span>
-                    </Link>
-                  </SidebarMenuButton>
-                )}
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                {isCollapsed ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <SidebarMenuButton 
-                        asChild
-                        className="hover:bg-sidebar-accent text-sidebar-foreground p-2 rounded-lg transition-colors justify-center"
-                      >
-                        <Link to={`/user/${userId}/help`}>
-                          <HelpCircle className="h-4 w-4" />
-                        </Link>
-                      </SidebarMenuButton>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">
-                      <p>Help</p>
-                    </TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <SidebarMenuButton 
-                    asChild
-                    className="hover:bg-sidebar-accent text-sidebar-foreground p-3 rounded-lg transition-colors"
-                  >
-                    <Link to={`/user/${userId}/help`}>
-                      <HelpCircle className="h-4 w-4" />
-                      <span className="ml-3">Help</span>
-                    </Link>
-                  </SidebarMenuButton>
-                )}
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </div>
-        </SidebarContent>
+        {/* Settings & Help - Bottom Section - Now fixed at bottom */}
+        <div className="pt-4 mt-2">
+          <SidebarMenu className="space-y-1">
+            <SidebarMenuItem>
+              {isCollapsed ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <SidebarMenuButton
+                      asChild
+                      className="hover:bg-sidebar-accent text-sidebar-foreground p-2 rounded-lg transition-colors justify-center"
+                    >
+                      <Link to={`/user/${userId}/settings`}>
+                        <Settings className="h-4 w-4" />
+                      </Link>
+                    </SidebarMenuButton>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">
+                    <p>Settings</p>
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <SidebarMenuButton
+                  asChild
+                  className="hover:bg-sidebar-accent text-sidebar-foreground p-3 rounded-lg transition-colors"
+                >
+                  <Link to={`/user/${userId}/settings`}>
+                    <Settings className="h-4 w-4" />
+                    <span className="ml-3">Settings</span>
+                  </Link>
+                </SidebarMenuButton>
+              )}
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              {isCollapsed ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <SidebarMenuButton
+                      asChild
+                      className="hover:bg-sidebar-accent text-sidebar-foreground p-2 rounded-lg transition-colors justify-center"
+                    >
+                      <Link to={`/user/${userId}/help`}>
+                        <HelpCircle className="h-4 w-4" />
+                      </Link>
+                    </SidebarMenuButton>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">
+                    <p>Help</p>
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <SidebarMenuButton
+                  asChild
+                  className="hover:bg-sidebar-accent text-sidebar-foreground p-3 rounded-lg transition-colors"
+                >
+                  <Link to={`/user/${userId}/help`}>
+                    <HelpCircle className="h-4 w-4" />
+                    <span className="ml-3">Help</span>
+                  </Link>
+                </SidebarMenuButton>
+              )}
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </div>
+      </SidebarContent>
     </TooltipProvider>
   );
 }
