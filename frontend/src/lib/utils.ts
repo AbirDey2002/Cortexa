@@ -216,3 +216,15 @@ export async function apiGet<T>(path: string): Promise<T> {
 export async function apiPost<T>(path: string, body?: any, headers?: Record<string, string>): Promise<T> {
   return apiPostBase<T>(path, body, headers);
 }
+
+export function normalizeMarkdownText(text: string): string {
+  try {
+    let s = text ?? "";
+    // Convert common escaped sequences to real characters for proper MD rendering
+    s = s.replace(/\\n/g, "\n");
+    s = s.replace(/\\t/g, "\t");
+    return s;
+  } catch {
+    return text;
+  }
+}

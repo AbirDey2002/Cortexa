@@ -5,7 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { FileChip } from "@/components/FileChip";
 import { PreviewPanel } from "@/components/PreviewPanel";
-import { useApi } from "@/lib/utils";
+import { useApi, normalizeMarkdownText } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { ChatInput, FloatingInputContainer, ChatTrace } from "@/components/chat";
 import ReactMarkdown from "react-markdown";
@@ -1188,17 +1188,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
 
   // Sidebar state not needed for removed files tray
 
-  function normalizeMarkdownText(text: string): string {
-    try {
-      let s = text ?? "";
-      // Convert common escaped sequences to real characters for proper MD rendering
-      s = s.replace(/\\n/g, "\n");
-      s = s.replace(/\\t/g, "\t");
-      return s;
-    } catch {
-      return text;
-    }
-  }
+
 
   return (
     <div className={`
