@@ -196,7 +196,15 @@ export function useApi() {
     return apiRequest<T>('PATCH', path, body, extraHeaders);
   }, [apiRequest]);
 
-  return { apiGet, apiPost, apiPatch };
+  const apiDelete = useCallback(async <T,>(
+    path: string,
+    body?: any,
+    extraHeaders?: Record<string, string>
+  ): Promise<T> => {
+    return apiRequest<T>('DELETE', path, body, extraHeaders);
+  }, [apiRequest]);
+
+  return { apiGet, apiPost, apiPatch, apiDelete };
 }
 
 // Legacy exports for backward compatibility (will be deprecated)

@@ -101,7 +101,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
               Start a chat to begin.
             </p>
           </div>
-          
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mt-6 sm:mt-8">
             <Card className="p-4 sm:p-5 md:p-6 hover:bg-card-hover transition-colors cursor-pointer border-border">
               <FileText className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 text-primary mb-2 sm:mb-3" />
@@ -110,7 +110,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
                 Upload your Functional Specification Document for comprehensive test case generation
               </p>
             </Card>
-            
+
             <Card className="p-4 sm:p-5 md:p-6 hover:bg-card-hover transition-colors cursor-pointer border-border">
               <FileText className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 text-secondary mb-2 sm:mb-3" />
               <h3 className="font-semibold text-card-foreground mb-1 sm:mb-2">Analyze CR</h3>
@@ -133,11 +133,10 @@ export const ChatContent: React.FC<ChatContentProps> = ({
           className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
         >
           <div
-            className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${
-              message.type === "user"
+            className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${message.type === "user"
                 ? "bg-chat-user border border-border ml-auto"
                 : "bg-chat-assistant border border-primary/30 mr-auto shadow-sm"
-            }`}
+              }`}
           >
             {message.file && (
               <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-accent/50 border border-border">
@@ -256,7 +255,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
             {message.hasPreview && onOpenPreview && (
               <Button
                 onClick={() => onOpenPreview(message.id)}
-                variant="outline" 
+                variant="outline"
                 size="sm"
                 className="mt-3 h-8 text-xs gap-2 hover:bg-gray-700 hover:text-gray-100"
               >
@@ -270,19 +269,19 @@ export const ChatContent: React.FC<ChatContentProps> = ({
           </div>
         </div>
       ))}
-      
+
       {isLoading && (
         <div className="flex justify-start">
           <div className="bg-chat-assistant border border-primary/30 rounded-xl p-4 mr-auto shadow-sm">
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" />
-              <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{animationDelay: '0.1s'}} />
-              <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{animationDelay: '0.2s'}} />
+              <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }} />
+              <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
             </div>
           </div>
         </div>
       )}
-      
+
       {/* Invisible element to scroll to */}
       <div ref={messagesEndRef} className="h-4" />
     </div>

@@ -36,11 +36,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === SESSION_STORAGE_KEY) {
-        const newUserId = e.newValue;
-        setUserId(newUserId);
+        setUserId(e.newValue);
       }
     };
-    
+
     window.addEventListener('storage', handleStorageChange);
     return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
@@ -50,10 +49,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const handleCustomStorageChange = (e: CustomEvent<string | null>) => {
       setUserId(e.detail);
     };
-    
+
     window.addEventListener('cortexa:userIdChanged', handleCustomStorageChange as EventListener);
     return () => window.removeEventListener('cortexa:userIdChanged', handleCustomStorageChange as EventListener);
   }, []);
+
+  // Auto-sync user with backend when authenticated
+  useEffect(() => {
+    const syncUser = async () => {
+      if (auth0IsAuthenticated && auth0User) {
+        try {
+          const token = await auth0GetAccessTokenSilently();
+          const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+
+          const response = await fetch(`${backendUrl}/users/sync`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            if (data.user_id) {
+              // Ensure session storage matches backend
+              const currentStoredId = sessionStorage.getItem(SESSION_STORAGE_KEY);
+              if (currentStoredId !== data.user_id) {
+                setUserIdInSession(data.user_id);
+              }
+            }
+          } else {
+            console.error("Failed to sync user with backend:", response.status);
+          }
+        } catch (error) {
+          console.error("Error syncing user:", error);
+        }
+      }
+    };
+
+    syncUser();
+  }, [auth0IsAuthenticated, auth0User, auth0GetAccessTokenSilently]);
 
   // Check sessionStorage on focus (for same-tab changes)
   useEffect(() => {
@@ -65,10 +101,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       }
     };
-    
+
     // Check on mount
     checkSessionStorage();
-    
+
     // Check when window gains focus
     window.addEventListener('focus', checkSessionStorage);
     return () => window.removeEventListener('focus', checkSessionStorage);

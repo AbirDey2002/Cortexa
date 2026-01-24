@@ -2,46 +2,45 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
-from passlib.context import CryptContext
 import uuid
 import logging
 import requests
 from typing import Dict, Any
+from datetime import datetime
 
 from deps import get_db
 from models.user.user import User
 from core.auth import verify_token
 from core.env_config import get_auth0_config
 
+# Import additional models for cascading delete
+from models.usecase.usecase import UsecaseMetadata
+from models.generator.requirement import Requirement
+from models.generator.scenario import Scenario
+from models.generator.test_case import TestCase
+from models.generator.test_script import TestScript
+from models.file_processing.file_metadata import FileMetadata
+from models.file_processing.file_workflow_tracker import FileWorkflowTracker
+from models.file_processing.ocr_records import OCRInfo, OCROutputs
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-
-class UserCreate(BaseModel):
-    email: str
-    name: str | None = None
-    password: str
+router = APIRouter()
 
 
 class UserUpdate(BaseModel):
     email: str | None = None
     name: str | None = None
-    password: str | None = None
     push_notification: bool | None = None
-
-
-class UserLogin(BaseModel):
-    email: str
-    password: str
 
 
 class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
     name: str | None = None
-    profile_image_url: str | None = None
     push_notification: bool
+    created_at: datetime
 
     class Config:
         from_attributes = True
@@ -51,36 +50,107 @@ class UserSyncResponse(BaseModel):
     user_id: str
     email: str
     name: str | None = None
-    profile_image_url: str | None = None
 
 
-@router.post("/", response_model=UserResponse)
-def create_user(payload: UserCreate, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == payload.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    hashed_password = pwd_context.hash(payload.password)
-    user = User(email=payload.email, name=payload.name, password=hashed_password)
-    db.add(user)
+@router.get("/{user_id}", response_model=UserResponse)
+def get_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
+    if not user:
+        raise HTTPException(status_code=44, detail="User not found")
+    
+    response = UserResponse.model_validate(user)
+    return response
+
+
+@router.patch("/{user_id}", response_model=UserResponse)
+def update_user(user_id: uuid.UUID, payload: UserUpdate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.email is not None:
+        user.email = payload.email
+    if payload.name is not None:
+        user.name = payload.name
+    # Handle push_notification update
+    if payload.push_notification is not None:
+        user.push_notification = payload.push_notification
     db.commit()
     db.refresh(user)
-    return user
+    
+    response = UserResponse.model_validate(user)
+    return response
 
 
-@router.get("/check")
-def check_user_exists(email: str, db: Session = Depends(get_db)):
+@router.delete("/{user_id}/data")
+def delete_user_data(user_id: uuid.UUID, db: Session = Depends(get_db)):
     """
-    Check if a user exists with the given email in database.
-    Used by frontend to validate before signup/login.
+    Delete all data associated with the user (Usecases, Requirements, Scenarios, etc.)
+    but keep the user account.
     """
-    user = db.query(User).filter(User.email == email, User.is_deleted == False).first()
-    return {"exists": user is not None}
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    try:
+        # Get all usecase IDs for this user
+        usecases = db.query(UsecaseMetadata).filter(UsecaseMetadata.user_id == user_id).all()
+        usecase_ids = [u.usecase_id for u in usecases]
+        
+        if not usecase_ids:
+            return {"status": "success", "message": "No data found to delete"}
 
+        # --- File Processing Branch ---
+        files = db.query(FileMetadata).filter(FileMetadata.usecase_id.in_(usecase_ids)).all()
+        file_ids = [f.file_id for f in files]
+        
+        if file_ids:
+            # Delete OCR Outputs & Info
+            db.query(OCROutputs).filter(OCROutputs.file_id.in_(file_ids)).delete(synchronize_session=False)
+            db.query(OCRInfo).filter(OCRInfo.file_id.in_(file_ids)).delete(synchronize_session=False)
+            
+            # Delete Workflow Trackers
+            db.query(FileWorkflowTracker).filter(FileWorkflowTracker.file_id.in_(file_ids)).delete(synchronize_session=False)
+            
+            # Delete Files
+            db.query(FileMetadata).filter(FileMetadata.file_id.in_(file_ids)).delete(synchronize_session=False)
 
-class Auth0SignupRequest(BaseModel):
-    email: str
-    password: str
-    name: str | None = None
+        # --- Generator Branch ---
+        # Get Requirement IDs
+        requirements = db.query(Requirement).filter(Requirement.usecase_id.in_(usecase_ids)).all()
+        req_ids = [r.id for r in requirements]
+        
+        if req_ids:
+            # Get Scenario IDs
+            scenarios = db.query(Scenario).filter(Scenario.requirement_id.in_(req_ids)).all()
+            scenario_ids = [s.id for s in scenarios]
+            
+            if scenario_ids:
+                # Get TestCase IDs
+                test_cases = db.query(TestCase).filter(TestCase.scenario_id.in_(scenario_ids)).all()
+                tc_ids = [tc.id for tc in test_cases]
+                
+                if tc_ids:
+                    # 1. Delete TestScripts
+                    db.query(TestScript).filter(TestScript.test_case_id.in_(tc_ids)).delete(synchronize_session=False)
+                    
+                    # 2. Delete TestScenes / TestCases
+                    db.query(TestCase).filter(TestCase.id.in_(tc_ids)).delete(synchronize_session=False)
+                
+                # 3. Delete Scenarios
+                db.query(Scenario).filter(Scenario.id.in_(scenario_ids)).delete(synchronize_session=False)
+            
+            # 4. Delete Requirements
+            db.query(Requirement).filter(Requirement.id.in_(req_ids)).delete(synchronize_session=False)
+            
+        # 5. Delete Usecases
+        db.query(UsecaseMetadata).filter(UsecaseMetadata.usecase_id.in_(usecase_ids)).delete(synchronize_session=False)
+            
+        db.commit()
+        return {"status": "success", "message": "All user data deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete user data: {str(e)}")
+
 
 
 def _get_auth0_m2m_token(domain: str, client_id: str, client_secret: str) -> str:
@@ -103,24 +173,26 @@ def _get_auth0_m2m_token(domain: str, client_id: str, client_secret: str) -> str
             error_msg = error_data.get("error_description", error_data.get("error", "Unauthorized"))
             
             detailed_error = (
-                "Auth0 Management API authentication failed (401 Unauthorized).\n\n"
-                "This usually means:\n"
-                "1. The M2M application doesn't exist or credentials are wrong\n"
-                "2. The M2M application isn't authorized for 'Auth0 Management API'\n"
-                "3. The M2M application doesn't have 'create:users' scope\n\n"
-                "SETUP INSTRUCTIONS:\n"
-                "1. Go to Auth0 Dashboard → Applications → Create Application\n"
-                "2. Choose 'Machine to Machine Applications'\n"
-                "3. Authorize it for 'Auth0 Management API'\n"
-                "4. Grant scopes: 'create:users', 'update:users', 'read:users'\n"
-                "5. Copy the Client ID and Client Secret\n"
-                "6. Add to backend/.env:\n"
-                "   AUTH0_M2M_CLIENT_ID=<your_m2m_client_id>\n"
-                "   AUTH0_M2M_CLIENT_SECRET=<your_m2m_client_secret>\n"
-                "7. Restart the backend server\n\n"
+                "Auth0 Management API authentication failed (401 Unauthorized).\\n\\n"
+                "This usually means:\\n"
+                "1. The M2M application doesn't exist or credentials are wrong\\n"
+                "2. The M2M application isn't authorized for 'Auth0 Management API'\\n"
+                "3. The M2M application doesn't have 'create:users' scope\\n\\n"
+                "SETUP INSTRUCTIONS:\\n"
+                "1. Go to Auth0 Dashboard → Applications → Create Application\\n"
+                "2. Choose 'Machine to Machine Applications'\\n"
+                "3. Authorize it for 'Auth0 Management API'\\n"
+                "4. Grant scopes: 'create:users', 'update:users', 'read:users'\\n"
+                "5. Copy the Client ID and Client Secret\\n"
+                "6. Add to backend/.env:\\n"
+                "   AUTH0_M2M_CLIENT_ID=<your_m2m_client_id>\\n"
+                "   AUTH0_M2M_CLIENT_SECRET=<your_m2m_client_secret>\\n"
+                "7. Restart the backend server\\n\\n"
                 f"Error details: {error_msg}"
             )
-            raise HTTPException(status_code=500, detail=detailed_error)
+            # Log error but raise generic to avoid leaking too much info to frontend if not admin
+            logger.error(detailed_error)
+            raise HTTPException(status_code=500, detail="Auth0 Management API authentication failed")
         
         response.raise_for_status()
         token_result = response.json()
@@ -134,10 +206,10 @@ def _get_auth0_m2m_token(domain: str, client_id: str, client_secret: str) -> str
         raise HTTPException(status_code=500, detail=f"Failed to get Auth0 Management API token: {str(e)}")
 
 
-def _check_user_exists_in_auth0(domain: str, m2m_token: str, email: str) -> dict | None:
+def _get_users_by_email_from_auth0(domain: str, m2m_token: str, email: str) -> list[dict]:
     """
-    Check if a user exists in Auth0 by email.
-    Returns the user object if found, None otherwise.
+    Get all users in Auth0 by email.
+    Returns a list of user objects.
     """
     try:
         # Search for user by email in Auth0
@@ -152,344 +224,115 @@ def _check_user_exists_in_auth0(domain: str, m2m_token: str, email: str) -> dict
         
         if response.status_code == 200:
             users = response.json()
-            if users and len(users) > 0:
-                # Return the first matching user
-                return users[0]
+            return users if isinstance(users, list) else []
         
-        return None
+        return []
     except Exception as e:
-        # Don't fail the signup if we can't check - let Auth0 handle it
-        return None
+        logger.error(f"Failed to fetch users from Auth0: {e}")
+        return []
 
 
-@router.post("/auth0-signup")
-def auth0_signup(payload: Auth0SignupRequest, db: Session = Depends(get_db)):
+@router.delete("/{user_id}")
+def delete_account(user_id: uuid.UUID, db: Session = Depends(get_db)):
     """
-    Create a new user in Auth0 and database using Management API.
-    Handles case where user exists in Auth0 but not in database (syncs them).
+    Delete user account and all associated data.
     """
-    # Check if user already exists in database
-    existing_user_db = db.query(User).filter(func.lower(User.email) == payload.email.lower(), User.is_deleted == False).first()
-    if existing_user_db:
-        raise HTTPException(status_code=400, detail="An account with this email already exists. Please sign in instead.")
-    
-    # Get Auth0 config
-    auth0_config = get_auth0_config()
-    domain = auth0_config.get("AUTH0_DOMAIN")
-    # Use M2M credentials if available, otherwise fall back to regular credentials
-    m2m_client_id = auth0_config.get("AUTH0_M2M_CLIENT_ID") or auth0_config.get("AUTH0_CLIENT_ID")
-    m2m_client_secret = auth0_config.get("AUTH0_M2M_CLIENT_SECRET") or auth0_config.get("AUTH0_CLIENT_SECRET")
-    has_m2m_creds = bool(auth0_config.get("AUTH0_M2M_CLIENT_ID") and auth0_config.get("AUTH0_M2M_CLIENT_SECRET"))
-    
-    if not domain or not m2m_client_id or not m2m_client_secret:
-        error_msg = (
-            "Auth0 configuration missing. Please set the following in your backend/.env file:\n"
-            "1. AUTH0_DOMAIN (required)\n"
-            "2. AUTH0_M2M_CLIENT_ID (from Machine-to-Machine application)\n"
-            "3. AUTH0_M2M_CLIENT_SECRET (from Machine-to-Machine application)\n\n"
-            "NOTE: You CANNOT use your SPA application credentials for Management API.\n"
-            "You MUST create a separate Machine-to-Machine application in Auth0 Dashboard."
-        )
-        raise HTTPException(status_code=500, detail=error_msg)
-    
+    # 1. Delete all associated data
     try:
-        # Get M2M token for Management API
+        delete_user_data(user_id, db)
+    except HTTPException as e:
+        if e.status_code != 404: 
+            raise e
+    except Exception as e:
+         # Log but try to continue to account deletion if data deletion fails? 
+         # No, if data delete fails (e.g. FK constraint), user delete will fail too.
+         # So we must raise, but maybe data delete succeeded partially?
+         # delete_user_data commits.
+         raise HTTPException(status_code=500, detail=f"Failed to delete user data: {str(e)}")
+    
+    # 2. Get user to delete
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        # Might have been deleted conceptually?
+        # If user is gone, we are good.
+        return {"status": "success", "message": "Account already deleted"}
+        
+    # 3. Delete from Auth0 (Best Effort)
+    try:
+        auth0_config = get_auth0_config()
+        domain = auth0_config.get("AUTH0_DOMAIN")
+        m2m_client_id = auth0_config.get("AUTH0_M2M_CLIENT_ID") or auth0_config.get("AUTH0_CLIENT_ID")
+        m2m_client_secret = auth0_config.get("AUTH0_M2M_CLIENT_SECRET") or auth0_config.get("AUTH0_CLIENT_SECRET")
+        
+        if domain and m2m_client_id and m2m_client_secret:
+            m2m_token = _get_auth0_m2m_token(domain, m2m_client_id, m2m_client_secret)
+            # Get ALL identities
+            auth0_users = _get_users_by_email_from_auth0(domain, m2m_token, user.email)
+            
+            for auth0_u in auth0_users:
+                try:
+                    u_id = auth0_u.get("user_id")
+                    if u_id:
+                        requests.delete(
+                            f"https://{domain}/api/v2/users/{u_id}",
+                            headers={"Authorization": f"Bearer {m2m_token}"},
+                            timeout=5
+                        )
+                        logger.info(f"Deleted Auth0 identity: {u_id}")
+                except Exception as ex:
+                    logger.error(f"Failed to delete Auth0 user {auth0_u.get('user_id')}: {ex}")
+                    # Continue to next identity
+    except Exception as e:
+        logger.error(f"Auth0 deletion process failed: {e}")
+        # Continue to DB deletion
+        
+    # 4. Delete from DB (Strict)
+    try:
+        # Re-fetch in case session issues, though 'user' is attached.
+        db.delete(user)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete account from database: {str(e)}")
+            
+    return {"status": "success", "message": "Account deleted successfully"}
+
+
+def _resolve_auth0_email(sub: str) -> str:
+    """
+    Resolve email from Auth0 using the subject (user_id) if missing from token.
+    """
+    try:
+        auth0_config = get_auth0_config()
+        domain = auth0_config.get("AUTH0_DOMAIN")
+        m2m_client_id = auth0_config.get("AUTH0_M2M_CLIENT_ID") or auth0_config.get("AUTH0_CLIENT_ID")
+        m2m_client_secret = auth0_config.get("AUTH0_M2M_CLIENT_SECRET") or auth0_config.get("AUTH0_CLIENT_SECRET")
+        
+        if not domain or not m2m_client_id or not m2m_client_secret:
+            logger.error("Auth0 M2M credentials missing for email resolution")
+            return None
+            
         m2m_token = _get_auth0_m2m_token(domain, m2m_client_id, m2m_client_secret)
         
-        # Check if user already exists in Auth0
-        auth0_user = _check_user_exists_in_auth0(domain, m2m_token, payload.email)
+        # quote the sub just in case, though usually safe_url_string
+        import urllib.parse
+        safe_sub = urllib.parse.quote(sub)
         
-        if auth0_user:
-            # User exists in Auth0 but not in our database
+        url = f"https://{domain}/api/v2/users/{safe_sub}"
+        headers = {"Authorization": f"Bearer {m2m_token}"}
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("email")
             
-            # Check the connection type - if it's Google, they should sign in with Google
-            connections = auth0_user.get("identities", [])
-            is_google_user = any(conn.get("provider") == "google-oauth2" for conn in connections)
-            
-            if is_google_user:
-                raise HTTPException(
-                    status_code=400,
-                    detail="An account with this email already exists (created via Google). Please sign in with Google instead."
-                )
-            
-            # User exists in Auth0 (likely created via another method or previous signup)
-            # Create them in our database
-            user = User(
-                email=payload.email,
-                name=payload.name or auth0_user.get("name"),
-                password=None,  # Auth0 handles password
-                profile_image_url=auth0_user.get("picture")
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-            
-            return {
-                "success": True,
-                "user_id": str(user.id),
-                "email": user.email,
-                "message": "Account synced successfully. Please sign in to continue."
-            }
-        
-        # User doesn't exist in Auth0, create new user
-        # Create user in Auth0 using Management API
-        management_url = f"https://{domain}/api/v2/users"
-        user_data = {
-            "email": payload.email,
-            "password": payload.password,
-            "connection": "Username-Password-Authentication",
-            "email_verified": False,
-        }
-        if payload.name:
-            user_data["name"] = payload.name
-        
-        headers = {
-            "Authorization": f"Bearer {m2m_token}",
-            "Content-Type": "application/json",
-        }
-        
-        response = requests.post(management_url, json=user_data, headers=headers, timeout=10)
-        
-        if response.status_code == 409:  # Conflict - user already exists (race condition)
-            # This shouldn't happen since we checked, but handle it anyway
-            auth0_user = _check_user_exists_in_auth0(domain, m2m_token, payload.email)
-            if auth0_user:
-                # Sync to database
-                user = User(
-                    email=payload.email,
-                    name=payload.name or auth0_user.get("name"),
-                    password=None,
-                    profile_image_url=auth0_user.get("picture")
-                )
-                db.add(user)
-                db.commit()
-                db.refresh(user)
-                
-                return {
-                    "success": True,
-                    "user_id": str(user.id),
-                    "email": user.email,
-                    "message": "Account synced successfully. Please sign in to continue."
-                }
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="An account with this email already exists. Please sign in instead."
-                )
-        
-        response.raise_for_status()
-        auth0_user = response.json()
-        
-        # User created successfully in Auth0
-        # Now create user in our database
-        user = User(
-            email=payload.email,
-            name=payload.name,
-            password=None,  # Auth0 handles password
-            profile_image_url=auth0_user.get("picture")
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-        
-        return {
-            "success": True,
-            "user_id": str(user.id),
-            "email": user.email,
-            "message": "Account created successfully"
-        }
-        
-    except HTTPException:
-        raise
-    except requests.exceptions.HTTPError as e:
-        if hasattr(e, 'response') and e.response is not None:
-            try:
-                error_data = e.response.json()
-                error_msg = error_data.get("message", error_data.get("error", "Failed to create user in Auth0"))
-                if "already exists" in error_msg.lower() or "user already exists" in error_msg.lower() or "already in use" in error_msg.lower():
-                    raise HTTPException(
-                        status_code=400,
-                        detail="An account with this email already exists (possibly created via Google). Please sign in instead."
-                    )
-                raise HTTPException(status_code=400, detail=f"Auth0 signup failed: {error_msg}")
-            except HTTPException:
-                raise
-            except:
-                raise HTTPException(status_code=400, detail=f"Failed to create user in Auth0: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to communicate with Auth0: {str(e)}")
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to communicate with Auth0: {str(e)}")
+        logger.error(f"Failed to fetch user {sub}: {response.text}")
+        return None
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error during signup: {str(e)}")
+        logger.error(f"Error resolving email for {sub}: {e}")
+        return None
 
 
-@router.get("/{user_id}", response_model=UserResponse)
-def get_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
-
-
-@router.post("/verify")
-def verify_user(payload: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email, User.is_deleted == False).first()
-    if not user or not user.password:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not pwd_context.verify(payload.password, user.password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return {"status": "verified", "user_id": str(user.id)}
-
-
-class Auth0LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-@router.post("/auth0-login")
-def auth0_login(payload: Auth0LoginRequest, db: Session = Depends(get_db)):
-    """
-    Authenticate user with Auth0 using password grant (Resource Owner Password Credentials).
-    Returns access token and user info. No popup/redirect needed.
-    """
-    # Check if user exists in database first
-    user = db.query(User).filter(User.email == payload.email, User.is_deleted == False).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="No account found with this email. Please sign up first.")
-    
-    # Get Auth0 config
-    auth0_config = get_auth0_config()
-    domain = auth0_config.get("AUTH0_DOMAIN")
-    client_id = auth0_config.get("AUTH0_CLIENT_ID")
-    client_secret = auth0_config.get("AUTH0_CLIENT_SECRET")
-    audience = auth0_config.get("AUTH0_AUDIENCE")
-    
-    if not domain or not client_id or not client_secret:
-        raise HTTPException(status_code=500, detail="Auth0 configuration missing")
-    
-    # Authenticate with Auth0 using password grant
-    token_url = f"https://{domain}/oauth/token"
-    token_data = {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "audience": audience,
-        "grant_type": "password",
-        "username": payload.email,
-        "password": payload.password,
-        "connection": "Username-Password-Authentication",
-        "scope": "openid profile email",
-    }
-    
-    try:
-        response = requests.post(token_url, json=token_data, timeout=10)
-        response.raise_for_status()
-        auth0_tokens = response.json()
-        
-        access_token = auth0_tokens.get("access_token")
-        id_token = auth0_tokens.get("id_token")
-        
-        if not access_token:
-            raise HTTPException(status_code=401, detail="Failed to get access token from Auth0")
-        
-        # Decode ID token to get user info (we can use python-jose for this)
-        from jose import jwt
-        try:
-            # For password grant, we don't verify the token signature since we got it from Auth0
-            # But we should at least decode it to get user info
-            id_token_payload = jwt.get_unverified_claims(id_token) if id_token else {}
-        except:
-            id_token_payload = {}
-        
-        return {
-            "access_token": access_token,
-            "id_token": id_token,
-            "user_id": str(user.id),
-            "email": user.email,
-            "name": user.name,
-        }
-        
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
-            raise HTTPException(status_code=401, detail="Invalid email or password")
-        elif e.response.status_code == 403:
-            raise HTTPException(status_code=403, detail="Access denied. Please check your credentials.")
-        else:
-            error_data = e.response.json() if e.response else {}
-            error_msg = error_data.get("error_description", error_data.get("error", "Authentication failed"))
-            raise HTTPException(status_code=401, detail=error_msg)
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to communicate with Auth0: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error during login: {str(e)}")
-
-
-@router.patch("/{user_id}", response_model=UserResponse)
-def update_user(user_id: uuid.UUID, payload: UserUpdate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if payload.email is not None:
-        user.email = payload.email
-    if payload.name is not None:
-        user.name = payload.name
-    if payload.password is not None:
-        user.password = pwd_context.hash(payload.password)
-    # Handle push_notification update
-    if payload.push_notification is not None:
-        user.push_notification = payload.push_notification
-    db.commit()
-    db.refresh(user)
-    return user
-
-
-@router.post("/sync-login", response_model=UserSyncResponse)
-def sync_user_login(
-    token_payload: Dict[str, Any] = Depends(verify_token),
-    db: Session = Depends(get_db)
-):
-    """
-    Sync Auth0 user to database for LOGIN flow.
-    Only updates existing users, does NOT create new users.
-    Returns error if user doesn't exist.
-    """
-    # Extract user info from JWT token
-    email = token_payload.get("email")
-    if not email:
-        email = token_payload.get("sub")
-    
-    if not email:
-        raise HTTPException(
-            status_code=400,
-            detail="Email or sub not found in token"
-        )
-    
-    name = token_payload.get("name") or token_payload.get("nickname")
-    picture = token_payload.get("picture")
-    
-    user = db.query(User).filter(User.email == email, User.is_deleted == False).first()
-    
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="No account found with this email. Please sign up first."
-        )
-    
-    # Update existing user
-    if name:
-        user.name = name
-    if picture:
-        user.profile_image_url = picture
-    db.commit()
-    db.refresh(user)
-    
-    response = UserSyncResponse(
-        user_id=str(user.id),
-        email=user.email,
-        name=user.name,
-        profile_image_url=user.profile_image_url
-    )
-    
-    return response
 
 
 @router.post("/sync", response_model=UserSyncResponse)
@@ -504,11 +347,11 @@ def sync_user(
     # Extract user info from JWT token
     # Prefer email, but if not available, use sub (Auth0 user ID) as email
     email = token_payload.get("email")
-    if not email:
-        email = token_payload.get("sub")
+    if not email and token_payload.get("sub"):
+        email = _resolve_auth0_email(token_payload.get("sub"))
     
     name = token_payload.get("name") or token_payload.get("nickname")
-    picture = token_payload.get("picture")
+    name = token_payload.get("name") or token_payload.get("nickname")
     
     if not email:
         raise HTTPException(
@@ -523,8 +366,6 @@ def sync_user(
         # Update existing user
         if name:
             user.name = name
-        if picture:
-            user.profile_image_url = picture
         db.commit()
         db.refresh(user)
     else:
@@ -543,9 +384,7 @@ def sync_user(
         # Create new user
         user = User(
             email=email,
-            name=name,
-            password=None,  # Auth0 handles authentication
-            profile_image_url=picture
+            name=name
         )
         db.add(user)
         db.commit()
@@ -554,8 +393,7 @@ def sync_user(
     response = UserSyncResponse(
         user_id=str(user.id),
         email=user.email,
-        name=user.name,
-        profile_image_url=user.profile_image_url
+        name=user.name
     )
     
     return response

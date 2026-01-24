@@ -21,6 +21,7 @@ from models.generator.requirement import Requirement
 from models.generator.scenario import Scenario
 from models.generator.test_case import TestCase
 from models.generator.test_script import TestScript
+from models.user.api_key import UserAPIKey
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

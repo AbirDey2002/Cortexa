@@ -20,39 +20,97 @@ from services.llm.gemini_conversational.gemini_invoker import (
 )
 from services.llm.gemini_conversational.json_output_parser import parse_llm_response
 
-# Hardcoded email for authentication
-DEFAULT_EMAIL = "abir.dey@intellectdesign.com"
-# Security: Use environment variable for default password, with secure fallback
-DEFAULT_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD", "ChangeMe123!Please")
+# ... (imports remain)
 
-def hash_password(password: str) -> str:
-    """Securely hash a password using SHA-256. In production, use bcrypt or similar."""
-    return hashlib.sha256(password.encode()).hexdigest()
+# ... imports
 
+# Removed hardcoded credentials
 
 router = APIRouter()
-
-# Create a separate router for frontend-specific endpoints
 frontend_router = APIRouter()
-
 
 class UpdateModelRequest(BaseModel):
     model: str
 
+class UsecaseCreate(BaseModel):
+    user_id: uuid.UUID
+    usecase_name: str = "New Chat"
+    email: str | None = None
+
+class UsecaseUpdate(BaseModel):
+    usecase_name: str | None = None
+    chat_history: dict | None = None
+    text_extraction: str | None = None
+    requirement_generation: str | None = None
+    scenario_generation: str | None = None
+    test_case_generation: str | None = None
+    test_script_generation: str | None = None
+
+class UsecaseResponse(BaseModel):
+    usecase_id: uuid.UUID
+    user_id: uuid.UUID
+    usecase_name: str
+    chat_history: list[dict] | None
+    text_extraction: str
+    requirement_generation: str
+    scenario_generation: str
+    test_case_generation: str
+    test_script_generation: str
+    email: str
+    status: str
+    selected_model: str | None = None
+
+    class Config:
+        from_attributes = True
+
+def _get_user_from_token(db: Session, token_payload: Dict[str, Any]) -> User:
+    """Helper to resolve user from token payload."""
+    email = token_payload.get("email")
+    if not email:
+        email = token_payload.get("sub")
+    
+    if not email:
+        raise HTTPException(status_code=401, detail="Could not identify user from token")
+        
+    # Find user
+    user = db.query(User).filter(User.email == email, User.is_deleted == False).first()
+    
+    # Optional logic: If using Auth0 and user doesn't exist in local DB but has valid token, 
+    # we *could* auto-create, but typically we want them to go through sync/login endpoint first.
+    # However, for robustness if sync failed, we might check if we want to fail or create.
+    # Let's fail for now to enforce proper login flow, or check by sub if email fails.
+    
+    if not user:
+        # Auto-recover: Create user if they have a valid token but no DB record
+        # This handles race conditions where frontend calls API before sync completes
+        logging.info(f"User {email} not found in DB. Auto-creating from token.")
+        name = token_payload.get("name") or token_payload.get("nickname")
+        user = User(email=email, name=name)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+         
+    return user
+
 
 @frontend_router.get("/{usecase_id}/chat")
-def get_chat_history_frontend(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_chat_history_frontend(
+    usecase_id: uuid.UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Frontend-specific endpoint to get chat history without ORM issues."""
     try:
+        user = _get_user_from_token(db, token_payload)
         # Use raw SQL to avoid ORM issues
         from sqlalchemy import text
         query = text("""
             SELECT chat_history
             FROM usecase_metadata
-            WHERE usecase_id = :usecase_id AND is_deleted = false
+            WHERE usecase_id = :usecase_id AND user_id = :user_id AND is_deleted = false
         """)
         
-        result = db.execute(query, {"usecase_id": usecase_id}).fetchone()
+        result = db.execute(query, {"usecase_id": usecase_id, "user_id": user.id}).fetchone()
         if not result:
             return []
             
@@ -63,9 +121,14 @@ def get_chat_history_frontend(usecase_id: uuid.UUID, db: Session = Depends(get_d
 
 
 @frontend_router.get("/{usecase_id}/statuses")
-def get_usecase_statuses_frontend(usecase_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_usecase_statuses_frontend(
+    usecase_id: uuid.UUID,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
     """Frontend-specific endpoint to get usecase statuses without ORM issues."""
     try:
+        user = _get_user_from_token(db, token_payload)
         # Use raw SQL to avoid ORM issues
         from sqlalchemy import text
         query = text("""
@@ -77,10 +140,10 @@ def get_usecase_statuses_frontend(usecase_id: uuid.UUID, db: Session = Depends(g
                 test_script_generation,
                 status
             FROM usecase_metadata
-            WHERE usecase_id = :usecase_id AND is_deleted = false
+            WHERE usecase_id = :usecase_id AND user_id = :user_id AND is_deleted = false
         """)
         
-        result = db.execute(query, {"usecase_id": usecase_id}).fetchone()
+        result = db.execute(query, {"usecase_id": usecase_id, "user_id": user.id}).fetchone()
         if not result:
             return {
                 "text_extraction": "Not Started",
@@ -111,63 +174,56 @@ def get_usecase_statuses_frontend(usecase_id: uuid.UUID, db: Session = Depends(g
         }
 
 
-class UsecaseCreate(BaseModel):
-    user_id: uuid.UUID
-    usecase_name: str = "New Chat"
-    email: str
-
-
-class UsecaseUpdate(BaseModel):
-    usecase_name: str | None = None
-    chat_history: dict | None = None
-    text_extraction: str | None = None
-    requirement_generation: str | None = None
-    scenario_generation: str | None = None
-    test_case_generation: str | None = None
-    test_script_generation: str | None = None
-
-
-class UsecaseResponse(BaseModel):
-    usecase_id: uuid.UUID
-    user_id: uuid.UUID
-    usecase_name: str
-    chat_history: list[dict] | None
-    text_extraction: str
-    requirement_generation: str
-    scenario_generation: str
-    test_case_generation: str
-    test_script_generation: str
-    email: str
-    status: str
-    selected_model: str | None = None
-
-    class Config:
-        from_attributes = True
-
-
+@frontend_router.post("/{usecase_id}/model")
+def update_usecase_model_frontend(
+    usecase_id: uuid.UUID,
+    payload: UpdateModelRequest,
+    token_payload: Dict[str, Any] = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the selected model for a usecase (frontend endpoint).
+    """
+    # Validate model
+    if not is_valid_model(payload.model):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model '{payload.model}'. Use /api/v1/models to see available models."
+        )
+    
+    user = _get_user_from_token(db, token_payload)
+    
+    # Get usecase
+    record = db.query(UsecaseMetadata).filter(
+        UsecaseMetadata.usecase_id == usecase_id,
+        UsecaseMetadata.user_id == user.id,
+        UsecaseMetadata.is_deleted == False
+    ).first()
+    
+    if not record:
+        raise HTTPException(status_code=404, detail="Usecase not found")
+    
+    # Update model
+    record.selected_model = payload.model
+    db.commit()
+    
+    return {
+        "usecase_id": str(usecase_id),
+        "selected_model": payload.model,
+        "message": "Model updated successfully"
+    }
 @router.post("/", response_model=UsecaseResponse)
 def create_usecase(
     payload: UsecaseCreate,
     token_payload: Dict[str, Any] = Depends(verify_token),
     db: Session = Depends(get_db)
 ):
-    # Get or create user with hardcoded email
-    user = db.query(User).filter(User.email == DEFAULT_EMAIL).first()
-    if not user:
-        # Create a new user if not exists
-        user = User(
-            email=DEFAULT_EMAIL,
-            name="Abir Dey",
-            password=hash_password(DEFAULT_PASSWORD)  # Now properly hashed
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+    user = _get_user_from_token(db, token_payload)
     
     record = UsecaseMetadata(
         user_id=user.id,
         usecase_name=payload.usecase_name,
-        email=DEFAULT_EMAIL,
+        email=user.email,
         chat_history=[],
         status="Completed",
     )
@@ -184,9 +240,18 @@ def update_usecase(
     token_payload: Dict[str, Any] = Depends(verify_token),
     db: Session = Depends(get_db)
 ):
-    record = db.query(UsecaseMetadata).filter(UsecaseMetadata.usecase_id == usecase_id, UsecaseMetadata.is_deleted == False).first()
+    # Ensure user owns the usecase
+    user = _get_user_from_token(db, token_payload)
+    
+    record = db.query(UsecaseMetadata).filter(
+        UsecaseMetadata.usecase_id == usecase_id, 
+        UsecaseMetadata.user_id == user.id, # Add ownership check
+        UsecaseMetadata.is_deleted == False
+    ).first()
+    
     if not record:
-        raise HTTPException(status_code=404, detail="Usecase not found")
+        raise HTTPException(status_code=404, detail="Usecase not found or access denied")
+        
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(record, field, value)
     db.commit()
@@ -201,6 +266,9 @@ def get_usecase_statuses(
     db: Session = Depends(get_db)
 ):
     try:
+        # Check ownership first (lightweight)
+        user = _get_user_from_token(db, token_payload)
+        
         # Use raw SQL to avoid ORM issues
         from sqlalchemy import text
         query = text("""
@@ -212,10 +280,12 @@ def get_usecase_statuses(
                 test_script_generation,
                 status
             FROM usecase_metadata
-            WHERE usecase_id = :usecase_id AND is_deleted = false
+            WHERE usecase_id = :usecase_id AND user_id = :user_id AND is_deleted = false
         """)
         
-        result = db.execute(query, {"usecase_id": usecase_id}).fetchone()
+        result = db.execute(query, {"usecase_id": usecase_id, "user_id": user.id}).fetchone()
+        
+        # ... (rest of parsing logic same, just added user_id check)
         if not result:
             return {
                 "text_extraction": "Not Started",
@@ -251,7 +321,6 @@ class ChatMessage(BaseModel):
     content: str
     files: list[dict] | None = None  # Optional file information
 
-
 @router.get("/{usecase_id}/chat")
 def get_chat_history(
     usecase_id: uuid.UUID,
@@ -259,15 +328,15 @@ def get_chat_history(
     db: Session = Depends(get_db)
 ):
     try:
-        # Use raw SQL to avoid ORM issues
+        user = _get_user_from_token(db, token_payload)
         from sqlalchemy import text
         query = text("""
             SELECT chat_history
             FROM usecase_metadata
-            WHERE usecase_id = :usecase_id AND is_deleted = false
+            WHERE usecase_id = :usecase_id AND user_id = :user_id AND is_deleted = false
         """)
         
-        result = db.execute(query, {"usecase_id": usecase_id}).fetchone()
+        result = db.execute(query, {"usecase_id": usecase_id, "user_id": user.id}).fetchone()
         if not result:
             return []
             
@@ -369,7 +438,6 @@ def _run_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, timeout_s
             record.chat_history = [err_entry] + history
             record.status = "Completed"
 
-
 @router.post("/{usecase_id}/chat")
 async def append_chat_message(
     usecase_id: uuid.UUID,
@@ -378,14 +446,20 @@ async def append_chat_message(
     token_payload: Dict[str, Any] = Depends(verify_token),
     db: Session = Depends(get_db)
 ):
-    record = db.query(UsecaseMetadata).filter(UsecaseMetadata.usecase_id == usecase_id, UsecaseMetadata.is_deleted == False).first()
+    user = _get_user_from_token(db, token_payload)
+    record = db.query(UsecaseMetadata).filter(
+        UsecaseMetadata.usecase_id == usecase_id, 
+        UsecaseMetadata.user_id == user.id,
+        UsecaseMetadata.is_deleted == False
+    ).first()
+    
     if not record:
         raise HTTPException(status_code=404, detail="Usecase not found")
-    # Prepend user message, set status to In Progress
+        
+    # ... (rest of logic)
     history = record.chat_history or []
     user_entry = {"user": payload.content, "timestamp": _utc_now_iso()}
     
-    # Add file information if provided
     if payload.files:
         user_entry["files"] = payload.files
         
@@ -393,7 +467,6 @@ async def append_chat_message(
     record.chat_history = history
     record.status = "In Progress"
     db.commit()
-    # Fire background inference
     background_tasks.add_task(_run_chat_inference_sync, usecase_id, payload.content)
     return {"status": "accepted", "usecase_id": str(usecase_id)}
 
@@ -405,19 +478,7 @@ def list_usecases_simple(
 ):
     """A simplified endpoint that returns only basic usecase data without relationships."""
     try:
-        # Get user by hardcoded email
-        user = db.query(User).filter(User.email == DEFAULT_EMAIL).first()
-        if not user:
-            # Create a default user
-            user = User(
-                email=DEFAULT_EMAIL,
-                name="Abir Dey",
-                password=hash_password(DEFAULT_PASSWORD)  # Now properly hashed
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-            return []
+        user = _get_user_from_token(db, token_payload)
         
         # Use raw SQL query to avoid ORM issues
         from sqlalchemy import text
@@ -439,7 +500,6 @@ def list_usecases_simple(
         
         result = db.execute(query, {"user_id": user.id}).fetchall()
         
-        # Process results
         return [
             {
                 "usecase_id": str(r.usecase_id),

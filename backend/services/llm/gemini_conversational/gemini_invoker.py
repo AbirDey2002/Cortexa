@@ -35,7 +35,7 @@ from .json_output_parser import (
     StrictJSONOutputParser
 )
 
-# Configure the Gemini API
+# Configure the Gemini API - fallback system key
 GEMINI_API_KEY = get_env_variable("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -46,7 +46,23 @@ CORTEXA_SYSTEM_PROMPT = create_enhanced_cortexa_prompt()
 # Logger
 logger = logging.getLogger(__name__)
 
-def invoke_gemini_chat(query: str, chat_history: Optional[list] = None, model_name: str = "gemini-2.5-flash", timeout_seconds: int = 60) -> Tuple[str, float, int]:
+
+def _get_effective_api_key(api_key: Optional[str] = None) -> str:
+    """
+    Get the effective API key to use.
+    Priority: explicit api_key parameter > system env variable.
+    """
+    if api_key and api_key.strip():
+        return api_key.strip()
+    return GEMINI_API_KEY
+
+def invoke_gemini_chat(
+    query: str,
+    chat_history: Optional[list] = None,
+    model_name: str = "gemini-2.5-flash",
+    timeout_seconds: int = 60,
+    api_key: Optional[str] = None
+) -> Tuple[str, float, int]:
     """
     Invoke Google Gemini for conversational AI.
 
@@ -55,12 +71,17 @@ def invoke_gemini_chat(query: str, chat_history: Optional[list] = None, model_na
         chat_history (list, optional): List of previous chat messages
         model_name (str): Model name to use (default: gemini-2.5-flash)
         timeout_seconds (int): Maximum time to wait for response
+        api_key (str, optional): API key to use. If not provided, uses system key.
 
     Returns:
         tuple: A tuple containing (response_text, cost_estimate, tokens_estimate)
     """
-    if not GEMINI_API_KEY:
-        return "Error: GEMINI_API_KEY environment variable not set", 0.0, 0
+    effective_key = _get_effective_api_key(api_key)
+    if not effective_key:
+        return "Error: No API key available (GEMINI_API_KEY not set and no user key provided)", 0.0, 0
+    
+    # Configure with the effective key
+    genai.configure(api_key=effective_key)
 
     start_time = time.time()
     
@@ -208,7 +229,11 @@ def _requirements_log_dir() -> str:
     return base
 
 
-def invoke_freeform_prompt(prompt: str, model_name: str = "gemini-2.5-flash") -> str:
+def invoke_freeform_prompt(
+    prompt: str,
+    model_name: str = "gemini-2.5-flash",
+    api_key: Optional[str] = None
+) -> str:
     """Send a single freeform prompt to Gemini and return raw text.
 
     Logs full prompt/response to console and writes to backend/logs/requirements.
@@ -216,10 +241,14 @@ def invoke_freeform_prompt(prompt: str, model_name: str = "gemini-2.5-flash") ->
     Args:
         prompt (str): The prompt to send
         model_name (str): Model name to use (default: gemini-2.5-flash)
+        api_key (str, optional): API key to use. If not provided, uses system key.
     """
-    if not GEMINI_API_KEY:
-        logger.error("invoke_freeform_prompt: GEMINI_API_KEY not set")
+    effective_key = _get_effective_api_key(api_key)
+    if not effective_key:
+        logger.error("invoke_freeform_prompt: No API key available")
         return ""
+    
+    genai.configure(api_key=effective_key)
     model = genai.GenerativeModel(model_name=model_name)
     ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
     log_dir = _requirements_log_dir()

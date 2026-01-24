@@ -547,7 +547,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
       const chatCount = usecases.length + 1;
       const chatName = `Chat ${chatCount}`;
 
-      const payload = { user_id: userId, usecase_name: chatName, email: "abir.dey@intellectdesign.com" };
+      const payload = { user_id: userId, usecase_name: chatName };
       const record = await apiPost<UsecaseListItem>("/usecases", payload);
 
       // Refresh the list of usecases after creating a new one

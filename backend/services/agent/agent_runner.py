@@ -2767,18 +2767,47 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
         selected_model = get_default_model()
     
     try:
-        # Provide a concrete LangChain Gemini model instance to DeepAgents
-        from core.env_config import get_env_variable
-        GEMINI_API_KEY = get_env_variable("GEMINI_API_KEY", "")
+        # Provide a LangChain model instance to DeepAgents
+        # Use unified invoker for multi-provider BYOK support
+        from services.llm.unified_invoker import get_chat_model_for_user, InvokerError, _get_provider_from_model
+        
+        # Get user_id from usecase for BYOK resolution
+        usecase_user_id = None
+        lc_model = None
+        model_label = "unknown"
+        
         try:
-            from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
-            lc_model = ChatGoogleGenerativeAI(model=selected_model, google_api_key=GEMINI_API_KEY)
-            model_label = f"langchain_google_genai.ChatGoogleGenerativeAI({selected_model})"
-        except Exception:
-            # Very last resort: fall back to model string with provider prefix
-            from langchain.chat_models import init_chat_model  # type: ignore
-            lc_model = init_chat_model(model=f"google-genai:{selected_model}", api_key=GEMINI_API_KEY)
-            model_label = f"init_chat_model(google-genai:{selected_model})"
+            with get_db_context() as _db:
+                from models.usecase.usecase import UsecaseMetadata
+                _rec = _db.query(UsecaseMetadata).filter(
+                    UsecaseMetadata.usecase_id == usecase_id,
+                    UsecaseMetadata.is_deleted == False,
+                ).first()
+                if _rec:
+                    usecase_user_id = _rec.user_id
+                    # Use unified invoker for multi-provider support
+                    try:
+                        lc_model, provider, key_source = get_chat_model_for_user(
+                            user_id=usecase_user_id,
+                            model_id=selected_model,
+                            db=_db,
+                            temperature=0.7,
+                            max_tokens=2048
+                        )
+                        model_label = f"{provider}:{selected_model} (key:{key_source})"
+                        logger.info(_color(f"[BYOK] Using {model_label}", "34"))
+                    except InvokerError as ie:
+                        logger.error(_color(f"[BYOK] No API key configured: {ie}", "31"))
+                        raise ValueError(f"No API key configured. Please add your API key in Settings → API Keys. Error: {ie}")
+        except ValueError:
+            raise  # Re-raise ValueError for no API key
+        except Exception as _e:
+            logger.error(_color(f"[BYOK] Unified invoker setup failed: {_e}", "31"))
+            raise ValueError(f"Failed to initialize LLM. Please configure your API key in Settings → API Keys. Error: {_e}")
+        
+        # No fallback - user must have configured a key
+        if lc_model is None:
+            raise ValueError("No LLM model available. Please configure your API key in Settings → API Keys.")
 
         from deepagents import create_deep_agent  # type: ignore
 
@@ -2807,7 +2836,7 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
                         if t:
                             total_words += len(t.split())
                     if total_words > 200000:
-                        GEMINI_API_KEY = get_env_variable("GEMINI_API_KEY", "")
+                        # Use already-resolved GEMINI_API_KEY from BYOK system
                         try:
                             import asyncio as _asyncio
                             context, updated_history, updated_summary, summarized = _asyncio.run(
@@ -2816,7 +2845,7 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
                                     chat_history=hist,
                                     chat_summary=getattr(rec, "chat_summary", None),
                                     user_query=user_message,
-                                    api_key=GEMINI_API_KEY,
+                                    api_key=GEMINI_API_KEY,  # Uses BYOK resolved key
                                     db=_db,
                                     model_name="gemini-2.5-flash",
                                 )

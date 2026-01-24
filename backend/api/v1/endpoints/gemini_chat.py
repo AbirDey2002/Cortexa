@@ -33,10 +33,7 @@ from core.model_registry import is_valid_model, get_default_model
 from core.auth import verify_token
 from typing import Dict, Any
 
-# Hardcoded email for authentication
-DEFAULT_EMAIL = "abir.dey@intellectdesign.com"
-# Security: Use environment variable for default password, with secure fallback
-DEFAULT_PASSWORD = os.getenv("DEFAULT_USER_PASSWORD", "ChangeMe123!Please")
+
 
 def hash_password(password: str) -> str:
     """Securely hash a password using SHA-256. In production, use bcrypt or similar."""

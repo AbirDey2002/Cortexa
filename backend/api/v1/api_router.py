@@ -8,6 +8,8 @@ from .endpoints.requirements_extraction import router as requirements_router
 from .endpoints.scenarios_extraction import router as scenarios_router
 from .endpoints.testcases_extraction import router as testcases_router
 from .endpoints.model_management import router as model_router
+from .endpoints.metrics import router as metrics_router
+from .endpoints.api_keys import router as api_keys_router
 
 
 api_router = APIRouter()
@@ -23,5 +25,6 @@ api_router.include_router(requirements_router, prefix="/requirements", tags=["re
 api_router.include_router(scenarios_router, prefix="/scenarios", tags=["scenarios"])
 api_router.include_router(testcases_router, prefix="/testcases", tags=["testcases"])
 api_router.include_router(model_router, prefix="/api/v1", tags=["models"])
-
+api_router.include_router(metrics_router, prefix="/metrics", tags=["metrics"])
+api_router.include_router(api_keys_router, prefix="/api-keys", tags=["api-keys"])
 

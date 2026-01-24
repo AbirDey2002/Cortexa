@@ -34,6 +34,15 @@ logger = logging.getLogger(__name__)
 # Create FastAPI app
 app = FastAPI(title="cortexa backend")
 
+# CORS - Must be added early before routes
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Include API router
 app.include_router(api_router)
 
@@ -417,9 +426,9 @@ def test_usecases():
         
         usecases = []
         with get_db_context() as db:
-            # Get user by hardcoded email
-            query = text("SELECT id FROM users WHERE email = :email")
-            user_result = db.execute(query, {"email": "abir.dey@intellectdesign.com"}).fetchone()
+            # Get first available user for testing
+            query = text("SELECT id FROM users WHERE is_deleted = false LIMIT 1")
+            user_result = db.execute(query).fetchone()
             
             if user_result:
                 user_id = user_result[0]
@@ -484,15 +493,6 @@ def test_usecases():
             }
         ]
         return Response(content=json.dumps(usecases), media_type="application/json")
-
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 if __name__ == "__main__":
     import uvicorn

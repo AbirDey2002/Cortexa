@@ -44,10 +44,10 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
     (async () => {
       try {
         const usecases = await apiGet<any[]>("/frontend/usecases/list");
-        
+
         if (usecases && usecases.length > 0) {
           setUserId(usecases[0].user_id);
-          
+
           if (initialUsecaseId) {
             const usecaseExists = usecases.some(u => u.usecase_id === initialUsecaseId);
             if (usecaseExists) {
@@ -56,7 +56,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
           }
           return;
         }
-        
+
         setUserId("52588196-f538-42bf-adb8-df885ab0120c");
       } catch (e) {
         setUserId("52588196-f538-42bf-adb8-df885ab0120c");
@@ -78,14 +78,14 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
         setStatus(statuses.status || "Completed");
         const history = await apiGet<any[]>(`/frontend/usecases/${activeUsecaseId}/chat`);
         if (cancelled) return;
-        
+
         // Sort messages by timestamp in ascending order (oldest first)
         const sortedHistory = [...history].sort((a, b) => {
           const tsA = new Date(a.timestamp || 0).getTime();
           const tsB = new Date(b.timestamp || 0).getTime();
           return tsA - tsB;
         });
-        
+
         setMessages(
           sortedHistory.map((entry, idx) => {
             const ts = new Date(entry.timestamp || Date.now());
@@ -100,7 +100,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
               const jsonText = m ? m[1] : content;
               const obj = JSON.parse(jsonText);
               if (obj && obj.user_answer) shown = obj.user_answer;
-            } catch {}
+            } catch { }
             return { id: `a-${idx}`, type: "assistant", content: shown, timestamp: ts } as Message;
           })
         );
@@ -117,42 +117,42 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
   // Unified polling for status and message retrieval
   useEffect(() => {
     if (!activeUsecaseId || !waitingForResponse) return;
-    
+
     let timer: any;
-    
+
     async function poll() {
       try {
         const response = await apiGet<any>(`/frontend/usecases/${activeUsecaseId}/statuses`);
         const currentStatus = response.status || "Completed";
         setStatus(currentStatus);
-        
+
         if (currentStatus === "In Progress") {
           setIsLoading(true);
           timer = setTimeout(poll, 2000);
         } else if (currentStatus === "Completed") {
           setIsLoading(false);
           setWaitingForResponse(false);
-          
-          if (response.latest_message && !messages.some(m => 
+
+          if (response.latest_message && !messages.some(m =>
             m.type === "assistant" && m.content === response.latest_message)) {
-            
+
             const systemMessage: Message = {
               id: `a-${Date.now()}`,
               type: "assistant",
               content: response.latest_message,
               timestamp: new Date(),
             };
-            
+
             setMessages(prev => [...prev, systemMessage]);
           } else {
             const history = await apiGet<any[]>(`/frontend/usecases/${activeUsecaseId}/chat`);
-            
+
             const sortedHistory = [...history].sort((a, b) => {
               const tsA = new Date(a.timestamp || 0).getTime();
               const tsB = new Date(b.timestamp || 0).getTime();
               return tsA - tsB;
             });
-            
+
             setMessages(
               sortedHistory.map((entry, idx) => {
                 const ts = new Date(entry.timestamp || Date.now());
@@ -166,7 +166,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
                   const jsonText = m ? m[1] : content;
                   const obj = JSON.parse(jsonText);
                   if (obj && obj.user_answer) shown = obj.user_answer;
-                } catch {}
+                } catch { }
                 return { id: `a-${idx}`, type: "assistant", content: shown, timestamp: ts } as Message;
               })
             );
@@ -177,9 +177,9 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
         setWaitingForResponse(false);
       }
     }
-    
+
     poll();
-    
+
     return () => {
       clearTimeout(timer);
     };
@@ -204,7 +204,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
       await apiPost(`/usecases/${activeUsecaseId}/gemini-chat`, { role: "user", content: userMessage.content });
       setStatus("In Progress");
       setWaitingForResponse(true);
-      
+
       if (window.dispatchEvent) {
         window.dispatchEvent(new CustomEvent('chat-updated', { detail: { usecaseId: activeUsecaseId } }));
       }
@@ -227,7 +227,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
       }));
       setUploadedFiles(prev => [...prev, ...newFiles]);
     }
-    
+
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -273,7 +273,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
     setPreviewTitle("Login Module Test Cases");
     setPreviewOpen(true);
   };
-  
+
   return (
     <MainLayout
       userId={userId}
@@ -291,14 +291,14 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
       <div className="flex h-full">
         {/* Main Content */}
         <div className={`flex-1 ${previewOpen ? 'hidden md:block md:w-3/5' : 'w-full'}`}>
-          <ChatContent 
+          <ChatContent
             usecaseId={activeUsecaseId}
             messages={messages}
             isLoading={isLoading}
             onOpenPreview={handleOpenPreview}
           />
         </div>
-        
+
         {/* Preview Panel */}
         {previewOpen && (
           <div className="w-full md:w-2/5 h-full">
@@ -310,7 +310,7 @@ export const ChatPage: React.FC<ChatPageProps> = ({ initialUsecaseId }) => {
           </div>
         )}
       </div>
-      
+
       <input
         ref={fileInputRef}
         type="file"

@@ -129,14 +129,24 @@ async def upload_file(
 
     with db_session as db:
         try:
-            logger.info(f"Looking up user with email: {email}")
-            # Get user by email
-            user = db.query(User).filter(User.email == email).first()
-            if not user:
-                logger.error(f"User not found for email: {email}")
-                raise HTTPException(status_code=404, detail="User not found")
+            # Resolve user from token for security and reliability
+            user_email = token_payload.get("email")
+            if not user_email:
+                user_email = token_payload.get("sub") # Fallback to sub if email missing
             
-            logger.info(f"User found. Using usecase ID: {usecase_id} for user: {email}")
+            logger.info(f"Resolving user from token: {user_email}")
+            
+            # Get or Auto-Create User
+            user = db.query(User).filter(User.email == user_email).first()
+            if not user:
+                logger.info(f"User {user_email} not found in DB. Auto-creating from token.")
+                name = token_payload.get("name") or token_payload.get("nickname")
+                user = User(email=user_email, name=name)
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+            
+            logger.info(f"User identified: {user.id} (using usecase {usecase_id})")
 
             # Toggle text_extraction to In Progress for this usecase
             try:

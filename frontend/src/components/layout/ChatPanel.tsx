@@ -16,7 +16,7 @@ interface ChatPanelProps {
   onFileUpload: () => void;
   onKeyPress: (e: React.KeyboardEvent) => void;
   isInputDisabled?: boolean;
-  uploadedFiles?: Array<{name: string; type: string}>;
+  uploadedFiles?: Array<{ name: string; type: string }>;
   onRemoveFile?: (index: number) => void;
 }
 
@@ -49,7 +49,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           </div>
         )}
         <div className="flex-1 px-2 sm:px-4">
-          <TopNavigation 
+          <TopNavigation
             currentModel={currentModel}
             onModelChange={onModelChange}
           />
@@ -80,7 +80,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               ))}
             </div>
           )}
-          
+
           <ChatInput
             value={inputValue}
             onChange={onInputChange}

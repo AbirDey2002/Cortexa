@@ -47,7 +47,7 @@ def verify_token(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict[str, Any]:
     """
-    Verify JWT token from Auth0.
+    Verify JWT token from Auth0 OR Local Auth.
     
     Returns the decoded token payload if valid.
     Raises HTTPException if token is invalid.

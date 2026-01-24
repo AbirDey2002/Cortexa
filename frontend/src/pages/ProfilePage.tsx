@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,31 +6,94 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
-import { User, Mail, Calendar, Building, Save, Upload } from "lucide-react";
+import { User, Mail, Calendar, Save } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import { Layout } from "@/components/Layout";
 
 export default function ProfilePage() {
   const { userId: urlUserId } = useParams<{ userId: string }>();
-  const { userId } = useAuth();
+  const { userId, getAccessTokenSilently, user } = useAuth();
   const actualUserId = urlUserId || userId;
   const { toast } = useToast();
-  const { user } = useAuth();
-  const [name, setName] = useState(user?.name || "John Doe");
-  const [email, setEmail] = useState(user?.email || "user@example.com");
-  const [company, setCompany] = useState("Acme Inc.");
-  const [bio, setBio] = useState("Software engineer passionate about AI and testing automation.");
 
-  const handleSave = () => {
-    toast({
-      title: "Profile updated",
-      description: "Your profile information has been saved successfully.",
-    });
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [memberSince, setMemberSince] = useState<string>("");
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchUserProfile = async () => {
+      if (!actualUserId) return;
+
+      try {
+        const token = await getAccessTokenSilently();
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+
+        const response = await fetch(`${backendUrl}/users/${actualUserId}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setName(data.name || user?.name || "");
+          setEmail(data.email || user?.email || "");
+
+          if (data.created_at) {
+            const date = new Date(data.created_at);
+            setMemberSince(date.toLocaleDateString('en-US', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric'
+            }));
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch profile:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchUserProfile();
+  }, [actualUserId, getAccessTokenSilently, user]);
+
+  const handleSave = async () => {
+    if (!actualUserId) return;
+    try {
+      const token = await getAccessTokenSilently();
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+
+      const response = await fetch(`${backendUrl}/users/${actualUserId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ name }),
+      });
+
+      if (response.ok) {
+        toast({
+          title: "Profile updated",
+          description: "Your profile information has been saved successfully.",
+        });
+      } else {
+        throw new Error("Failed to update");
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to update profile. Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
   const getInitials = (name: string) => {
-    return name
+    return (name || "U")
       .split(" ")
       .map((n) => n[0])
       .join("")
@@ -40,6 +103,10 @@ export default function ProfilePage() {
 
   if (!actualUserId) {
     return null;
+  }
+
+  if (isLoading) {
+    return <div className="p-8 text-center">Loading profile...</div>;
   }
 
   return (
@@ -55,7 +122,7 @@ export default function ProfilePage() {
           <Card>
             <CardHeader>
               <CardTitle>Profile Information</CardTitle>
-              <CardDescription>Update your personal information and profile picture</CardDescription>
+              <CardDescription>Update your personal information</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="flex items-center gap-6">
@@ -65,15 +132,7 @@ export default function ProfilePage() {
                     {getInitials(name)}
                   </AvatarFallback>
                 </Avatar>
-                <div className="space-y-2">
-                  <Button variant="outline">
-                    <Upload className="w-4 h-4 mr-2" />
-                    Upload Photo
-                  </Button>
-                  <p className="text-sm text-muted-foreground">
-                    JPG, PNG or GIF. Max size 2MB.
-                  </p>
-                </div>
+                {/* Upload removed as not implemented in backend yet */}
               </div>
 
               <Separator />
@@ -99,62 +158,16 @@ export default function ProfilePage() {
                     id="email"
                     type="email"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
                     disabled
+                    className="bg-muted"
                   />
                 </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="company">
-                  <Building className="w-4 h-4 inline mr-2" />
-                  Company
-                </Label>
-                <Input
-                  id="company"
-                  value={company}
-                  onChange={(e) => setCompany(e.target.value)}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="bio">Bio</Label>
-                <Input
-                  id="bio"
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  placeholder="Tell us about yourself"
-                />
               </div>
 
               <Button onClick={handleSave} className="w-full sm:w-auto">
                 <Save className="w-4 h-4 mr-2" />
                 Save Changes
               </Button>
-            </CardContent>
-          </Card>
-
-          {/* Account Stats */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Account Statistics</CardTitle>
-              <CardDescription>Your usage and activity overview</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid md:grid-cols-3 gap-4">
-                <div className="p-4 rounded-lg glass">
-                  <div className="text-2xl font-bold text-primary mb-1">24</div>
-                  <div className="text-sm text-muted-foreground">Test Cases Generated</div>
-                </div>
-                <div className="p-4 rounded-lg glass">
-                  <div className="text-2xl font-bold text-primary mb-1">12</div>
-                  <div className="text-sm text-muted-foreground">Requirements Processed</div>
-                </div>
-                <div className="p-4 rounded-lg glass">
-                  <div className="text-2xl font-bold text-primary mb-1">8</div>
-                  <div className="text-sm text-muted-foreground">Active Projects</div>
-                </div>
-              </div>
             </CardContent>
           </Card>
 
@@ -169,7 +182,7 @@ export default function ProfilePage() {
                   <Calendar className="w-4 h-4 text-muted-foreground" />
                   <span className="text-sm">Member since</span>
                 </div>
-                <span className="text-sm font-medium">January 2024</span>
+                <span className="text-sm font-medium">{memberSince || "Loading..."}</span>
               </div>
               <Separator />
               <div className="flex items-center justify-between">
@@ -177,6 +190,7 @@ export default function ProfilePage() {
                   <Mail className="w-4 h-4 text-muted-foreground" />
                   <span className="text-sm">Email verified</span>
                 </div>
+                {/* Assuming verified if logged in via Google, or check user.email_verified */}
                 <span className="text-sm font-medium text-green-500">Verified</span>
               </div>
             </CardContent>

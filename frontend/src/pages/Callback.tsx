@@ -10,7 +10,7 @@ export default function Callback() {
 
   useEffect(() => {
     const handleCallback = async () => {
-      
+
       if (isLoading) {
         return;
       }
@@ -25,15 +25,10 @@ export default function Callback() {
         const token = await getAccessTokenSilently();
 
         const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
-        
-        // Check if this is a login or signup attempt
-        const loginMode = sessionStorage.getItem("auth0_login_mode");
-        const syncUrl = loginMode === "login" 
-          ? `${backendUrl}/users/sync-login` 
-          : `${backendUrl}/users/sync`;
-        
 
         // Sync user to backend
+        const syncUrl = `${backendUrl}/users/sync`;
+
         const response = await fetch(syncUrl, {
           method: "POST",
           headers: {
@@ -42,23 +37,11 @@ export default function Callback() {
           },
         });
 
-
         if (!response.ok) {
           let errorText = "";
           try {
             const errorData = await response.json();
             errorText = errorData.detail || JSON.stringify(errorData);
-            
-            // If login mode and user doesn't exist, redirect to homepage with error
-            if (response.status === 404 && loginMode === "login") {
-              sessionStorage.removeItem("auth0_login_mode");
-              // Store error message to display on homepage
-              sessionStorage.setItem("auth0_login_error", errorText || "No account found with this email. Please sign up first.");
-              const { logout } = await import("@auth0/auth0-react");
-              logout({ logoutParams: { returnTo: window.location.origin } });
-              navigate("/", { replace: true });
-              return;
-            }
           } catch (e) {
           }
           throw new Error(`Failed to sync user: ${response.status} ${response.statusText} - ${errorText}`);
