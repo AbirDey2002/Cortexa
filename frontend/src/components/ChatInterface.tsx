@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { FileText, ExternalLink } from "lucide-react";
+import { FileText, ExternalLink, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { FileChip } from "@/components/FileChip";
 import { PreviewPanel } from "@/components/PreviewPanel";
-import { useApi, normalizeMarkdownText } from "@/lib/utils";
+import { useApi, normalizeMarkdownText, extractMainTextFromStored } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { ChatInput, FloatingInputContainer, ChatTrace } from "@/components/chat";
 import ReactMarkdown from "react-markdown";
@@ -20,25 +20,7 @@ import { ScenariosMessage } from "@/components/chat/ScenariosMessage";
 import { TestCasesMessage } from "@/components/chat/TestCasesMessage";
 import { requestNotificationPermission, sendNotification } from "@/lib/notifications";
 
-function extractMainTextFromStored(raw: any): string {
-  try {
-    if (typeof raw !== "string") return String(raw ?? "");
-    const s = raw.trim();
-    if (s.startsWith("[") && (s.includes("'text'") || s.includes('"text"'))) {
-      const re = /(?:'text'|\"text\")\s*:\s*(?:'([^']*)'|\"([^\"]*)\")/g;
-      const parts: string[] = [];
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(s)) !== null) {
-        const val = m[1] || m[2] || "";
-        if (val) parts.push(val);
-      }
-      return parts.join("\n\n") || s;
-    }
-    return s;
-  } catch {
-    return String(raw ?? "");
-  }
-}
+
 
 interface Traces {
   engine?: string | null;
@@ -193,6 +175,144 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
   const [waitingForResponse, setWaitingForResponse] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  // Export Chat Logic
+  const handleExportChat = () => {
+    // 1. Gather all content with timestamps
+    const allContent: Array<{ timestamp: Date; content: string }> = [];
+
+    // Add Messages
+    messages.forEach(m => {
+      const role = m.type === "user" ? "User" : "Assistant";
+      const timestamp = m.timestamp.toLocaleString();
+      let text = `### ${role} (${timestamp})\n\n`;
+      text += normalizeMarkdownText(m.content) + "\n\n";
+      allContent.push({ timestamp: m.timestamp, content: text });
+    });
+
+    // Add Requirements
+    requirementsMessages.forEach(rm => {
+      const timestamp = rm.timestamp.toLocaleString();
+      let text = `### Requirements Generated (${timestamp})\n\n`;
+      rm.requirements.forEach((req, idx) => {
+        text += `#### ${idx + 1}. ${req.name}\n${req.description}\n\n`;
+
+        // Extract Entities Logic (Mirroring RequirementCard.tsx)
+        const requirementEntities = req.requirement_entities || {};
+        const entitiesArray = Array.isArray(requirementEntities)
+          ? requirementEntities
+          : (requirementEntities.requirement_entities || []);
+
+        if (entitiesArray.length > 0) {
+          const entity = entitiesArray[0];
+          const reqData = entity.requirements || {};
+          const userStories = entity.user_stories || [];
+
+          if (userStories.length > 0) {
+            text += `**User Stories:**\n`;
+            userStories.forEach((us: any) => text += `- ${typeof us === 'string' ? us : JSON.stringify(us)}\n`);
+            text += `\n`;
+          }
+
+          // Render nested requirement sections
+          Object.entries(reqData).forEach(([key, value]) => {
+            if (Array.isArray(value) && value.length > 0) {
+              const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+              text += `**${displayKey}:**\n`;
+              value.forEach((item: any) => {
+                const itemText = typeof item === 'string' ? item : JSON.stringify(item, null, 2);
+                text += `- ${itemText.replace(/\n/g, '\n  ')}\n`;
+              });
+              text += `\n`;
+            } else if (typeof value === 'object' && value !== null) {
+              const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+              text += `**${displayKey}:**\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\`\n\n`;
+            }
+          });
+        }
+      });
+      allContent.push({ timestamp: rm.timestamp, content: text });
+    });
+
+    // Add Scenarios
+    scenariosMessages.forEach(sm => {
+      const timestamp = sm.timestamp.toLocaleString();
+      let text = `### Scenarios Generated (${timestamp})\n\n`;
+      sm.scenarios.forEach((sc, idx) => {
+        text += `#### ${idx + 1}. ${sc.scenario_name}\n${sc.scenario_description}\n\n`;
+
+        // Flows
+        if (sc.flows && Array.isArray(sc.flows) && sc.flows.length > 0) {
+          text += `**Flows:**\n`;
+          sc.flows.forEach((flow: any) => {
+            text += `- ${typeof flow === 'string' ? flow : (flow.description || JSON.stringify(flow))}\n`;
+          });
+          text += `\n`;
+        }
+      });
+      allContent.push({ timestamp: sm.timestamp, content: text });
+    });
+
+    // Add Test Cases
+    testCasesMessages.forEach(tcm => {
+      const timestamp = tcm.timestamp.toLocaleString();
+      let text = `### Test Cases Generated (${timestamp})\n\n`;
+      tcm.testCases.forEach((tc, idx) => {
+        text += `#### ${idx + 1}. ${tc.test_case}\n${tc.description || ""}\n- **Flow**: ${tc.flow || ""}\n`;
+
+        // Pre-conditions
+        if (tc.preConditions && tc.preConditions.length > 0) {
+          text += `\n**Pre-conditions:**\n`;
+          tc.preConditions.forEach(pc => text += `- ${pc}\n`);
+        }
+
+        // Test Data
+        if (tc.testData && tc.testData.length > 0) {
+          text += `\n**Test Data:**\n`;
+          tc.testData.forEach(td => text += `- ${td}\n`);
+        }
+
+        // Test Steps
+        if (tc.testSteps && tc.testSteps.length > 0) {
+          text += `\n**Test Steps:**\n`;
+          tc.testSteps.forEach((s, i) => text += `${i + 1}. ${s}\n`);
+        }
+
+        // Expected Results
+        if (tc.expectedResults && tc.expectedResults.length > 0) {
+          text += `\n**Expected Results:**\n`;
+          tc.expectedResults.forEach(er => text += `- ${er}\n`);
+        }
+
+        // Post-conditions
+        if (tc.postConditions && tc.postConditions.length > 0) {
+          text += `\n**Post-conditions:**\n`;
+          tc.postConditions.forEach(pc => text += `- ${pc}\n`);
+        }
+
+        text += `\n`;
+      });
+      allContent.push({ timestamp: tcm.timestamp, content: text });
+    });
+
+    // 2. Sort by timestamp
+    allContent.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+    // 3. Generate Markdown
+    const title = `Chat Export - ${usecaseId || "Session"} - ${new Date().toLocaleString()}`;
+    const mdContent = `# ${title}\n\n` + allContent.map(c => c.content).join("---\n\n");
+
+    // 4. Download File
+    const blob = new Blob([mdContent], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Cortexa_Chat_${usecaseId || "Session"}_${new Date().toISOString().split('T')[0]}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   // Removed OCR UI state
 
@@ -1600,51 +1720,73 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                       return (
                         <div
                           key={message.id}
-                          className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
+                          className={`group flex flex-col ${message.type === "user" ? "items-end" : "items-start"} mb-4`}
                         >
-                          <div
-                            className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${message.type === "user"
-                              ? "bg-chat-user border border-border ml-auto"
-                              : "bg-chat-assistant border border-primary/30 mr-auto shadow-sm"
-                              }`}
-                          >
-                            {message.file && (
-                              <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-accent/50 border border-border">
-                                <FileText className="w-4 h-4 text-accent-foreground" />
-                                <span className="text-sm font-medium text-accent-foreground">
-                                  {message.file.name}
-                                </span>
+                          <div className={`flex ${message.type === "user" ? "flex-row-reverse" : "flex-row"} items-start max-w-[95%] sm:max-w-[90%] md:max-w-[85%]`}>
+                            <div
+                              className={`relative p-3 sm:p-4 rounded-lg sm:rounded-xl overflow-hidden ${message.type === "user"
+                                ? "bg-chat-user border border-border"
+                                : "bg-chat-assistant border border-primary/30 shadow-sm"
+                                }`}
+                            >
+                              {message.file && (
+                                <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-accent/50 border border-border">
+                                  <FileText className="w-4 h-4 text-accent-foreground" />
+                                  <span className="text-sm font-medium text-accent-foreground">
+                                    {message.file.name}
+                                  </span>
+                                </div>
+                              )}
+                              <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
+                                {message.type === "assistant" ? (
+                                  <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    rehypePlugins={[rehypeHighlight]}
+                                  >
+                                    {normalizeMarkdownText(message.content)}
+                                  </ReactMarkdown>
+                                ) : (
+                                  <>{message.content}</>
+                                )}
                               </div>
-                            )}
-                            <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
-                              {message.type === "assistant" ? (
-                                <ReactMarkdown
-                                  remarkPlugins={[remarkGfm]}
-                                  rehypePlugins={[rehypeHighlight]}
+
+                              {/* Traces logged to console only */}
+                              {message.type === "assistant" && message.traces && (
+                                (() => {
+                                  console.log("Trace for message " + message.id, message.traces);
+                                  return null;
+                                })()
+                              )}
+
+                              {message.hasPreview && (
+                                <Button
+                                  onClick={() => handleOpenPreview(message.id)}
+                                  variant="outline"
+                                  size="sm"
+                                  className="mt-3 h-8 text-xs gap-2 hover:bg-gray-700 hover:text-gray-100"
                                 >
-                                  {normalizeMarkdownText(message.content)}
-                                </ReactMarkdown>
-                              ) : (
-                                <>{message.content}</>
+                                  <ExternalLink className="w-3 h-3" />
+                                  Open in Preview
+                                </Button>
                               )}
                             </div>
-                            {message.type === "assistant" && message.traces && (
-                              <ChatTrace traces={message.traces as any} />
-                            )}
-                            {message.hasPreview && (
-                              <Button
-                                onClick={() => handleOpenPreview(message.id)}
-                                variant="outline"
-                                size="sm"
-                                className="mt-3 h-8 text-xs gap-2 hover:bg-gray-700 hover:text-gray-100"
-                              >
-                                <ExternalLink className="w-3 h-3" />
-                                Open in Preview
-                              </Button>
-                            )}
-                            <div className="text-xs text-muted-foreground mt-2">
-                              {message.timestamp.toLocaleTimeString()}
-                            </div>
+
+                            {/* Copy Button */}
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(extractMainTextFromStored(message.content));
+                                toast({ title: "Copied to clipboard" });
+                              }}
+                              className={`invisible group-hover:visible p-2 text-muted-foreground hover:text-foreground transition-all duration-200 ${message.type === "user" ? "mr-2" : "ml-2"}`}
+                              title="Copy message"
+                            >
+                              <Copy className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          {/* Timestamp outside bubble */}
+                          <div className="text-xs text-muted-foreground mt-1 px-1">
+                            {message.timestamp.toLocaleDateString()} {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </div>
                         </div>
                       );
@@ -1655,29 +1797,45 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                   return messages.map((message) => (
                     <div
                       key={message.id}
-                      className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
+                      className={`group flex flex-col ${message.type === "user" ? "items-end" : "items-start"} mb-4`}
                     >
-                      <div
-                        className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${message.type === "user"
-                          ? "bg-chat-user border border-border ml-auto"
-                          : "bg-chat-assistant border border-border mr-auto"
-                          }`}
-                      >
-                        <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
-                          {message.type === "assistant" ? (
-                            <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
-                              rehypePlugins={[rehypeHighlight]}
-                            >
-                              {normalizeMarkdownText(message.content)}
-                            </ReactMarkdown>
-                          ) : (
-                            <>{message.content}</>
-                          )}
+                      <div className={`flex ${message.type === "user" ? "flex-row-reverse" : "flex-row"} items-start max-w-[95%] sm:max-w-[90%] md:max-w-[85%]`}>
+                        <div
+                          className={`relative p-3 sm:p-4 rounded-lg sm:rounded-xl overflow-hidden ${message.type === "user"
+                            ? "bg-chat-user border border-border"
+                            : "bg-chat-assistant border border-border"
+                            }`}
+                        >
+                          <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
+                            {message.type === "assistant" ? (
+                              <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                rehypePlugins={[rehypeHighlight]}
+                              >
+                                {normalizeMarkdownText(message.content)}
+                              </ReactMarkdown>
+                            ) : (
+                              <>{message.content}</>
+                            )}
+                          </div>
                         </div>
-                        <div className="text-xs text-muted-foreground mt-2">
-                          {message.timestamp.toLocaleTimeString()}
-                        </div>
+
+                        {/* Copy Button */}
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(extractMainTextFromStored(message.content));
+                            toast({ title: "Copied to clipboard" });
+                          }}
+                          className={`invisible group-hover:visible p-2 text-muted-foreground hover:text-foreground transition-all duration-200 ${message.type === "user" ? "mr-2" : "ml-2"}`}
+                          title="Copy message"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {/* Timestamp outside bubble */}
+                      <div className="text-xs text-muted-foreground mt-1 px-1">
+                        {message.timestamp.toLocaleDateString()} {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </div>
                     </div>
                   ));
@@ -1725,6 +1883,7 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               onFileUpload={handleFileUpload}
               onKeyPress={handleKeyPress}
               isDisabled={status === "In Progress" || isLoading || reqGenConfirmOpen || scenarioGenConfirmOpen || testCaseGenConfirmOpen}
+              onExport={handleExportChat}
             />
 
             <input

@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { normalizeMarkdownText } from "@/lib/utils";
+import { FileText, ExternalLink, Copy } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { normalizeMarkdownText, extractMainTextFromStored } from "@/lib/utils";
 import { ChatTrace } from "./ChatTrace";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { FileText, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import "highlight.js/styles/github-dark.css";
@@ -55,6 +56,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
   isLoading = false,
   onOpenPreview,
 }) => {
+  const { toast } = useToast();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
 
@@ -131,142 +133,163 @@ export const ChatContent: React.FC<ChatContentProps> = ({
       {messages.map((message) => (
         <div
           key={message.id}
-          className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
+          className={`group flex flex-col ${message.type === "user" ? "items-end" : "items-start"} mb-4`}
         >
-          <div
-            className={`max-w-[95%] sm:max-w-[90%] md:max-w-[85%] rounded-lg sm:rounded-xl p-3 sm:p-4 overflow-hidden ${message.type === "user"
-              ? "bg-chat-user border border-border ml-auto"
-              : "bg-chat-assistant border border-primary/30 mr-auto shadow-sm"
-              }`}
-          >
-            {message.file && (
-              <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-accent/50 border border-border">
-                <FileText className="w-4 h-4 text-accent-foreground" />
-                <span className="text-sm font-medium text-accent-foreground">
-                  {message.file.name}
-                </span>
+          <div className={`flex ${message.type === "user" ? "flex-row-reverse" : "flex-row"} items-start max-w-[95%] sm:max-w-[90%] md:max-w-[85%]`}>
+            <div
+              className={`relative p-3 sm:p-4 rounded-lg sm:rounded-xl overflow-hidden ${message.type === "user"
+                ? "bg-chat-user border border-border"
+                : "bg-chat-assistant border border-primary/30 shadow-sm"
+                }`}
+            >
+              {message.file && (
+                <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-accent/50 border border-border">
+                  <FileText className="w-4 h-4 text-accent-foreground" />
+                  <span className="text-sm font-medium text-accent-foreground">
+                    {message.file.name}
+                  </span>
+                </div>
+              )}
+              <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[rehypeHighlight]}
+                  components={{
+                    // Customize headings
+                    h1: ({ children }) => (
+                      <h1 className="text-lg font-bold mb-2 text-foreground">{children}</h1>
+                    ),
+                    h2: ({ children }) => (
+                      <h2 className="text-base font-bold mb-2 text-foreground">{children}</h2>
+                    ),
+                    h3: ({ children }) => (
+                      <h3 className="text-sm font-bold mb-1 text-foreground">{children}</h3>
+                    ),
+                    // Customize paragraphs
+                    p: ({ children }) => (
+                      <p className="mb-2 last:mb-0">{children}</p>
+                    ),
+                    // Customize code blocks
+                    pre: ({ children }) => (
+                      <pre className="bg-muted p-3 rounded-lg overflow-x-auto my-2 text-xs border border-border">
+                        {children}
+                      </pre>
+                    ),
+                    // Customize inline code
+                    code: ({ children, className }) => {
+                      const isBlock = className?.includes('language-');
+                      if (isBlock) {
+                        return <code className={className}>{children}</code>;
+                      }
+                      return (
+                        <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono border border-border">
+                          {children}
+                        </code>
+                      );
+                    },
+                    // Customize lists
+                    ul: ({ children }) => (
+                      <ul className="list-disc ml-4 mb-2 space-y-1">{children}</ul>
+                    ),
+                    ol: ({ children }) => (
+                      <ol className="list-decimal ml-4 mb-2 space-y-1">{children}</ol>
+                    ),
+                    li: ({ children }) => (
+                      <li className="text-sm">{children}</li>
+                    ),
+                    // Customize links
+                    a: ({ href, children }) => (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:text-primary/80 underline transition-colors"
+                      >
+                        {children}
+                      </a>
+                    ),
+                    // Customize blockquotes
+                    blockquote: ({ children }) => (
+                      <blockquote className="border-l-4 border-primary pl-4 py-2 my-2 bg-muted/50 rounded-r">
+                        {children}
+                      </blockquote>
+                    ),
+                    // Customize tables
+                    table: ({ children }) => (
+                      <div className="overflow-x-auto my-2">
+                        <table className="min-w-full border border-border rounded">
+                          {children}
+                        </table>
+                      </div>
+                    ),
+                    thead: ({ children }) => (
+                      <thead className="bg-muted">{children}</thead>
+                    ),
+                    th: ({ children }) => (
+                      <th className="border border-border px-3 py-2 text-left text-xs font-semibold">
+                        {children}
+                      </th>
+                    ),
+                    td: ({ children }) => (
+                      <td className="border border-border px-3 py-2 text-xs">
+                        {children}
+                      </td>
+                    ),
+                    // Customize horizontal rules
+                    hr: () => (
+                      <hr className="border-border my-4" />
+                    ),
+                    // Customize strong/bold
+                    strong: ({ children }) => (
+                      <strong className="font-semibold text-foreground">{children}</strong>
+                    ),
+                    // Customize emphasis/italic
+                    em: ({ children }) => (
+                      <em className="italic text-muted-foreground">{children}</em>
+                    ),
+                  }}
+                >
+                  {normalizeMarkdownText(message.content)}
+                </ReactMarkdown>
               </div>
-            )}
-            <div className="text-sm leading-relaxed break-words overflow-x-auto overflow-y-visible markdown-content">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeHighlight]}
-                components={{
-                  // Customize headings
-                  h1: ({ children }) => (
-                    <h1 className="text-lg font-bold mb-2 text-foreground">{children}</h1>
-                  ),
-                  h2: ({ children }) => (
-                    <h2 className="text-base font-bold mb-2 text-foreground">{children}</h2>
-                  ),
-                  h3: ({ children }) => (
-                    <h3 className="text-sm font-bold mb-1 text-foreground">{children}</h3>
-                  ),
-                  // Customize paragraphs
-                  p: ({ children }) => (
-                    <p className="mb-2 last:mb-0">{children}</p>
-                  ),
-                  // Customize code blocks
-                  pre: ({ children }) => (
-                    <pre className="bg-muted p-3 rounded-lg overflow-x-auto my-2 text-xs border border-border">
-                      {children}
-                    </pre>
-                  ),
-                  // Customize inline code
-                  code: ({ children, className }) => {
-                    const isBlock = className?.includes('language-');
-                    if (isBlock) {
-                      return <code className={className}>{children}</code>;
-                    }
-                    return (
-                      <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono border border-border">
-                        {children}
-                      </code>
-                    );
-                  },
-                  // Customize lists
-                  ul: ({ children }) => (
-                    <ul className="list-disc ml-4 mb-2 space-y-1">{children}</ul>
-                  ),
-                  ol: ({ children }) => (
-                    <ol className="list-decimal ml-4 mb-2 space-y-1">{children}</ol>
-                  ),
-                  li: ({ children }) => (
-                    <li className="text-sm">{children}</li>
-                  ),
-                  // Customize links
-                  a: ({ href, children }) => (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary hover:text-primary/80 underline transition-colors"
-                    >
-                      {children}
-                    </a>
-                  ),
-                  // Customize blockquotes
-                  blockquote: ({ children }) => (
-                    <blockquote className="border-l-4 border-primary pl-4 py-2 my-2 bg-muted/50 rounded-r">
-                      {children}
-                    </blockquote>
-                  ),
-                  // Customize tables
-                  table: ({ children }) => (
-                    <div className="overflow-x-auto my-2">
-                      <table className="min-w-full border border-border rounded">
-                        {children}
-                      </table>
-                    </div>
-                  ),
-                  thead: ({ children }) => (
-                    <thead className="bg-muted">{children}</thead>
-                  ),
-                  th: ({ children }) => (
-                    <th className="border border-border px-3 py-2 text-left text-xs font-semibold">
-                      {children}
-                    </th>
-                  ),
-                  td: ({ children }) => (
-                    <td className="border border-border px-3 py-2 text-xs">
-                      {children}
-                    </td>
-                  ),
-                  // Customize horizontal rules
-                  hr: () => (
-                    <hr className="border-border my-4" />
-                  ),
-                  // Customize strong/bold
-                  strong: ({ children }) => (
-                    <strong className="font-semibold text-foreground">{children}</strong>
-                  ),
-                  // Customize emphasis/italic
-                  em: ({ children }) => (
-                    <em className="italic text-muted-foreground">{children}</em>
-                  ),
-                }}
-              >
-                {normalizeMarkdownText(message.content)}
-              </ReactMarkdown>
+
+              {/* Traces logged to console only */}
+              {message.type === "assistant" && message.traces && (
+                (() => {
+                  console.log("Trace for message " + message.id, message.traces);
+                  return null;
+                })()
+              )}
+
+              {message.hasPreview && onOpenPreview && (
+                <Button
+                  onClick={() => onOpenPreview(message.id)}
+                  variant="outline"
+                  size="sm"
+                  className="mt-3 h-8 text-xs gap-2 hover:bg-gray-700 hover:text-gray-100"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  Open in Preview
+                </Button>
+              )}
             </div>
-            {/* Traces disclosure */}
-            {message.type === "assistant" && message.traces && (
-              <ChatTrace traces={message.traces} />
-            )}
-            {message.hasPreview && onOpenPreview && (
-              <Button
-                onClick={() => onOpenPreview(message.id)}
-                variant="outline"
-                size="sm"
-                className="mt-3 h-8 text-xs gap-2 hover:bg-gray-700 hover:text-gray-100"
-              >
-                <ExternalLink className="w-3 h-3" />
-                Open in Preview
-              </Button>
-            )}
-            <div className="text-xs text-muted-foreground mt-2">
-              {message.timestamp.toLocaleTimeString()}
-            </div>
+
+            {/* Copy Button */}
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(extractMainTextFromStored(message.content));
+                toast({ title: "Copied to clipboard" });
+              }}
+              className={`invisible group-hover:visible p-2 text-muted-foreground hover:text-foreground transition-all duration-200 ${message.type === "user" ? "mr-2" : "ml-2"}`}
+              title="Copy message"
+            >
+              <Copy className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Timestamp outside bubble */}
+          <div className="text-xs text-muted-foreground mt-1 px-1">
+            {message.timestamp.toLocaleDateString()} {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </div>
         </div>
       ))}

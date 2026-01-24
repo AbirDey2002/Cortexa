@@ -20,10 +20,20 @@ export default function ContactPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Construct mailto URL
+    const mailtoLink = `mailto:abirdey43@gmail.com?subject=${encodeURIComponent(formData.subject)}&body=${encodeURIComponent(
+      `${formData.message}\n\nFrom: ${formData.name} <${formData.email}>`
+    )}`;
+
     toast({
-      title: "Message sent",
-      description: "Thank you for contacting us! We'll get back to you soon.",
+      title: "Opening email client",
+      description: "Redirecting you to your default email app...",
     });
+
+    // Open mail client
+    window.location.href = mailtoLink;
+
     setFormData({ name: "", email: "", subject: "", message: "" });
   };
 
@@ -57,10 +67,10 @@ export default function ContactPage() {
             </CardHeader>
             <CardContent>
               <a
-                href="mailto:support@cortexa.ai"
+                href="mailto:abirdey43@gmail.com"
                 className="text-primary hover:underline font-medium"
               >
-                support@cortexa.ai
+                abirdey43@gmail.com
               </a>
             </CardContent>
           </Card>

@@ -228,3 +228,23 @@ export function normalizeMarkdownText(text: string): string {
     return text;
   }
 }
+
+export function extractMainTextFromStored(raw: any): string {
+  try {
+    if (typeof raw !== "string") return String(raw ?? "");
+    const s = raw.trim();
+    if (s.startsWith("[") && (s.includes("'text'") || s.includes('"text"'))) {
+      const re = /(?:'text'|\"text\")\s*:\s*(?:'([^']*)'|\"([^\"]*)\")/g;
+      const parts: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(s)) !== null) {
+        const val = m[1] || m[2] || "";
+        if (val) parts.push(val);
+      }
+      return parts.join("\n\n") || s;
+    }
+    return s;
+  } catch {
+    return String(raw ?? "");
+  }
+}

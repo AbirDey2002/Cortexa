@@ -10,7 +10,6 @@ import { SignupModal } from "@/components/auth/SignupModal";
 const navLinks = [
   { label: "Product", href: "/#features" },
   { label: "Features", href: "/#how-it-works" },
-  { label: "Pricing", href: "/pricing" },
   { label: "Documentation", href: "/documentation" },
   { label: "Blog", href: "/blog" },
   { label: "Contact", href: "/contact" },
@@ -37,9 +36,9 @@ export const Navbar = () => {
         <div className="flex items-center justify-between h-16 md:h-20">
           {/* Logo */}
           <Link to="/" className="flex items-center gap-2 group">
-            <img 
-              src="/cortexa.png" 
-              alt="Cortexa Logo" 
+            <img
+              src="/cortexa.png"
+              alt="Cortexa Logo"
               className="h-8 w-8 object-contain"
             />
             <span className="text-xl font-display font-bold text-foreground">
@@ -74,14 +73,14 @@ export const Navbar = () => {
           <div className="hidden lg:flex items-center gap-3">
             {!isAuthenticated ? (
               <>
-                <Button 
-                  variant="ghost" 
+                <Button
+                  variant="ghost"
                   onClick={handleLogin}
                   className="text-muted-foreground hover:text-foreground"
                 >
                   Login
                 </Button>
-                <Button 
+                <Button
                   onClick={handleSignUp}
                   className="bg-gradient-primary hover:opacity-90 text-primary-foreground font-semibold shadow-glow transition-all duration-300 hover:shadow-lg"
                 >
@@ -89,7 +88,7 @@ export const Navbar = () => {
                 </Button>
               </>
             ) : (
-              <Button 
+              <Button
                 onClick={() => userId && navigate(`/user/${userId}`)}
                 className="bg-gradient-primary hover:opacity-90 text-primary-foreground font-semibold shadow-glow transition-all duration-300 hover:shadow-lg"
               >
@@ -125,8 +124,8 @@ export const Navbar = () => {
               <div className="flex flex-col gap-2 pt-4 border-t border-border">
                 {!isAuthenticated ? (
                   <>
-                    <Button 
-                      variant="ghost" 
+                    <Button
+                      variant="ghost"
                       onClick={() => {
                         handleLogin();
                         setIsOpen(false);
@@ -135,7 +134,7 @@ export const Navbar = () => {
                     >
                       Login
                     </Button>
-                    <Button 
+                    <Button
                       onClick={() => {
                         handleSignUp();
                         setIsOpen(false);
@@ -146,7 +145,7 @@ export const Navbar = () => {
                     </Button>
                   </>
                 ) : (
-                  <Button 
+                  <Button
                     onClick={() => {
                       if (userId) {
                         navigate(`/user/${userId}`);
