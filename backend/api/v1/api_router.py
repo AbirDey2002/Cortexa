@@ -10,6 +10,7 @@ from .endpoints.testcases_extraction import router as testcases_router
 from .endpoints.model_management import router as model_router
 from .endpoints.metrics import router as metrics_router
 from .endpoints.api_keys import router as api_keys_router
+from .endpoints.agent_traces import router as agent_traces_router
 
 
 api_router = APIRouter()
@@ -27,4 +28,5 @@ api_router.include_router(testcases_router, prefix="/testcases", tags=["testcase
 api_router.include_router(model_router, prefix="/api/v1", tags=["models"])
 api_router.include_router(metrics_router, prefix="/metrics", tags=["metrics"])
 api_router.include_router(api_keys_router, prefix="/api-keys", tags=["api-keys"])
+api_router.include_router(agent_traces_router, prefix="/usecases", tags=["agent-traces"])
 

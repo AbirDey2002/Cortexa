@@ -1,9 +1,9 @@
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables before importing config classes
 
-from fastapi import FastAPI, Response, BackgroundTasks, Request, status
+from fastapi import FastAPI, Response, BackgroundTasks, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from models.base import Base
@@ -34,14 +34,52 @@ logger = logging.getLogger(__name__)
 # Create FastAPI app
 app = FastAPI(title="cortexa backend")
 
+# Import security configurations
+from core.config import CORSConfigs, SecurityConfigs
+from core.security_middleware import SecurityHeadersMiddleware
+from core.rate_limit import setup_rate_limiting
+
 # CORS - Must be added early before routes
+# Use environment-configured allowed origins instead of wildcard
+allowed_origins = CORSConfigs.get_allowed_origins()
+logger.info(f"CORS allowed origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add security headers middleware
+app.add_middleware(SecurityHeadersMiddleware, environment=SecurityConfigs.ENVIRONMENT)
+
+# Setup rate limiting
+setup_rate_limiting(app)
+
+# Global exception handler to prevent information disclosure
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Global exception handler to prevent leaking internal server details.
+    Logs the full error server-side but returns a generic message to the client.
+    """
+    # Log the full error with traceback
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
+    
+    # Return generic error to client (avoid information disclosure)
+    if SecurityConfigs.IS_PRODUCTION:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "An internal server error occurred. Please try again later."}
+        )
+    else:
+        # In development, show more details
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": str(exc)}
+        )
 
 # Include API router
 app.include_router(api_router)

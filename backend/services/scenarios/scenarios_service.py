@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from models.generator.scenario import Scenario
 from models.generator.requirement import Requirement
-from services.llm.gemini_conversational.gemini_invoker import invoke_freeform_prompt
+from services.llm.gemini_conversational.gemini_invoker import invoke_freeform_prompt, get_user_gemini_key
 from core.config import AgentLogConfigs
 import os
 import importlib
@@ -47,16 +47,26 @@ def _blue(text: str) -> str:
         return text
 
 
-def extract_scenarios_from_requirement(requirement_json: Dict, model_name: str = "gemini-2.5-flash") -> List[Dict]:
+def extract_scenarios_from_requirement(requirement_json: Dict, user_id: UUID = None, model_name: str = "gemini-2.5-flash") -> List[Dict]:
     """
     Extract scenarios from a requirement JSON using the scenario generator prompt.
     
     Args:
         requirement_json: The requirement JSON containing name, description, requirement_entities, etc.
+        user_id: User UUID to fetch API key from database
+        model_name: Model name to use
     
     Returns:
         List of scenario dictionaries
     """
+    # Get user's API key from database
+    api_key = None
+    if user_id:
+        api_key = get_user_gemini_key(user_id)
+        if not api_key:
+            logger.error("scenarios_service: No API key found for user %s", user_id)
+            return []
+    
     # Load prompt from scenario_generator_prompt.py (using environment variables like requirements)
     prompt_file = get_env_variable("SCENARIO_GENERATOR_PROMPT_FILE", "").strip()
     base_prompt: str
@@ -110,7 +120,7 @@ def extract_scenarios_from_requirement(requirement_json: Dict, model_name: str =
     
     req_name = requirement_json.get("name", "Unknown")
     logger.info("scenarios_service: invoking scenario generator for requirement '%s', model=%s", req_name, model_name)
-    raw = invoke_freeform_prompt(prompt, model_name=model_name)
+    raw = invoke_freeform_prompt(prompt, model_name=model_name, api_key=api_key)
     
     # Log COMPLETE raw output from the agent before any parsing
     try:

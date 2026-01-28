@@ -151,7 +151,7 @@ def _check_for_tool_call_gemini(raw_output: str) -> tuple[bool, str, dict]:
     return False, "", {}
 
 
-def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, model: str | None = None, timeout_seconds: int = 300):
+def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, model: str | None = None, timeout_seconds: int = 300, turn_id: uuid.UUID | None = None):
     """
     Enhanced Gemini chat inference with automatic history management and summarization.
     
@@ -160,6 +160,7 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
         user_message: The user's message
         model: Optional model ID. If not provided, uses usecase's selected_model or default
         timeout_seconds: Timeout for the operation
+        turn_id: Optional turn ID to link traces to specific chat message
     """
     logger = logging.getLogger(__name__)
     
@@ -213,8 +214,8 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                     )
                 )
 
-                # Delegate to deep agent for orchestration
-                assistant_text, traces = run_agent_turn(usecase_id, user_message, model=selected_model)
+                # Delegate to deep agent for orchestration (pass turn_id for trace linking)
+                assistant_text, traces = run_agent_turn(usecase_id, user_message, model=selected_model, turn_id=turn_id)
                 gemini_streaming_responses[str(usecase_id)] = assistant_text
                 
                 # Debug: Log traces structure
@@ -246,8 +247,8 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                 # PDF markers are now created during file upload, not here
                 # This ensures correct ordering: User message → PDF marker → Agent response
 
-                # Persist full record (system text + structured traces)
-                system_entry = {"system": assistant_text, "timestamp": _utc_now_iso(), "traces": traces}
+                # Persist full record (system text + structured traces + turn_id for linking)
+                system_entry = {"system": assistant_text, "timestamp": _utc_now_iso(), "traces": traces, "turn_id": str(turn_id) if turn_id else None}
                 
                 # Re-read chat_history from DB to get any [modal] markers created by tools during execution
                 db.refresh(record)
@@ -431,9 +432,12 @@ async def append_gemini_chat_message(
     if not record:
         raise HTTPException(status_code=404, detail="Usecase not found")
     
+    # Generate unique turn_id to link this chat turn with its traces
+    turn_id = uuid.uuid4()
+    
     # Prepend user message, set status to In Progress
     history = record.chat_history or []
-    user_entry = {"user": payload.content, "timestamp": _utc_now_iso()}
+    user_entry = {"user": payload.content, "timestamp": _utc_now_iso(), "turn_id": str(turn_id)}
     
     # Add file information if provided
     if payload.files:
@@ -551,9 +555,9 @@ async def append_gemini_chat_message(
     # PDF markers are now created by Tool 2 (show_extracted_text) when agent calls it
     # No automatic marker creation here - markers only created when user explicitly asks to see PDF
     
-    # Fire background inference with Gemini
-    background_tasks.add_task(_run_gemini_chat_inference_sync, usecase_id, payload.content, payload.model)
-    return {"status": "accepted", "usecase_id": str(usecase_id), "provider": "gemini"}
+    # Fire background inference with Gemini (include turn_id for trace linking)
+    background_tasks.add_task(_run_gemini_chat_inference_sync, usecase_id, payload.content, payload.model, 300, turn_id)
+    return {"status": "accepted", "usecase_id": str(usecase_id), "turn_id": str(turn_id), "provider": "gemini"}
 
 
 @router.get("/{usecase_id}/gemini-chat")

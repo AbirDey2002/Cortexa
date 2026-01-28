@@ -48,10 +48,11 @@ def _run_requirements_generation(usecase_id: UUID):
             # Get the selected model from usecase, fallback to default
             from core.model_registry import get_default_model
             selected_model = record.selected_model or get_default_model()
-            logger.info(_blue(f"requirements_extraction: using model={selected_model} for usecase={usecase_id}"))
+            user_id = record.user_id
+            logger.info(_blue(f"requirements_extraction: using model={selected_model} for usecase={usecase_id}, user_id={user_id}"))
 
             files, combined_md = get_usecase_documents_markdown(db, usecase_id)
-            req_list = extract_requirement_list(combined_md, model_name=selected_model)
+            req_list = extract_requirement_list(combined_md, user_id=user_id, model_name=selected_model)
             total_requirements = len(req_list)
             logger.info(_blue(f"requirements_extraction: list count={total_requirements}"))
 
@@ -68,7 +69,7 @@ def _run_requirements_generation(usecase_id: UUID):
                     # Log polling status: starting requirement processing
                     logger.info(_blue(f"[REQ-STATUS] usecase={usecase_id} | Processing requirement {idx}/{total_requirements} | Name='{name}' | Status=STARTING"))
                     
-                    details = extract_requirement_details(combined_md, name, desc, prior, model_name=selected_model)
+                    details = extract_requirement_details(combined_md, name, desc, prior, user_id=user_id, model_name=selected_model)
                     
                     # Log LLM requirement payload (blue) before storing
                     try:

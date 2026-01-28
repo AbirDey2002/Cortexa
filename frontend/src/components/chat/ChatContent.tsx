@@ -3,6 +3,7 @@ import { FileText, ExternalLink, Copy } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { normalizeMarkdownText, extractMainTextFromStored } from "@/lib/utils";
 import { ChatTrace } from "./ChatTrace";
+import { ThinkingStream } from "./ThinkingStream";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -294,14 +295,13 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         </div>
       ))}
 
-      {isLoading && (
-        <div className="flex justify-start">
-          <div className="bg-chat-assistant border border-primary/30 rounded-xl p-4 mr-auto shadow-sm">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" />
-              <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }} />
-              <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
-            </div>
+      {isLoading && usecaseId && (
+        <div className="flex justify-start w-full">
+          <div className="w-full max-w-[95%] sm:max-w-[90%] md:max-w-[85%]">
+            <ThinkingStream
+              usecaseId={usecaseId}
+              isProcessing={isLoading}
+            />
           </div>
         </div>
       )}

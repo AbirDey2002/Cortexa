@@ -58,7 +58,8 @@ def _run_testcases_generation(usecase_id: UUID):
             # Get the selected model from usecase, fallback to default
             from core.model_registry import get_default_model
             selected_model = record.selected_model or get_default_model()
-            logger.info(_blue(f"testcases_extraction: using model={selected_model} for usecase={usecase_id}"))
+            user_id = record.user_id
+            logger.info(_blue(f"testcases_extraction: using model={selected_model} for usecase={usecase_id}, user_id={user_id}"))
 
             # Get extracted text once for all scenarios
             extracted_text = get_usecase_documents_markdown(db, usecase_id)
@@ -99,6 +100,7 @@ def _run_testcases_generation(usecase_id: UUID):
                         scen_text, 
                         req_text, 
                         extracted_text,
+                        user_id=user_id,
                         model_name=selected_model
                     )
                     

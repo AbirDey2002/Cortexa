@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from models.file_processing.file_metadata import FileMetadata
 from models.file_processing.ocr_records import OCROutputs
 from models.generator.requirement import Requirement
-from services.llm.gemini_conversational.gemini_invoker import invoke_gemini_chat_with_timeout, invoke_freeform_prompt
+from services.llm.gemini_conversational.gemini_invoker import invoke_gemini_chat_with_timeout, invoke_freeform_prompt, get_user_gemini_key
 from services.llm.gemini_conversational.json_output_parser import parse_llm_response
 from core.config import OCRServiceConfigs
 import os
@@ -83,7 +83,23 @@ def _yellow(text: str) -> str:
         return text
 
 
-def extract_requirement_list(markdown: str, model_name: str = "gemini-2.5-flash") -> List[Dict]:
+def extract_requirement_list(markdown: str, user_id: UUID = None, model_name: str = "gemini-2.5-flash") -> List[Dict]:
+    """
+    Extract requirement list from markdown.
+    
+    Args:
+        markdown: Document markdown content
+        user_id: User UUID to fetch API key from database
+        model_name: Model name to use
+    """
+    # Get user's API key from database
+    api_key = None
+    if user_id:
+        api_key = get_user_gemini_key(user_id)
+        if not api_key:
+            logger.error("requirements_service: No API key found for user %s", user_id)
+            return []
+    
     # Prefer file-based prompt if provided to ease multiline editing
     prompt_file = get_env_variable("REQUIREMENT_LIST_PROMPT_FILE", "").strip()
     base_prompt: str
@@ -128,7 +144,7 @@ def extract_requirement_list(markdown: str, model_name: str = "gemini-2.5-flash"
                 Document Context:""" + markdown
     
     logger.info("requirements_service: invoking requirement list extractor, prompt_chars=%d, model=%s", len(prompt), model_name)
-    raw = invoke_freeform_prompt(prompt, model_name=model_name)
+    raw = invoke_freeform_prompt(prompt, model_name=model_name, api_key=api_key)
     # Log COMPLETE raw output from the agent before any parsing (for parser adjustments)
     # Always log complete output, write to file if too long for console
     try:
@@ -260,7 +276,26 @@ def extract_requirement_list(markdown: str, model_name: str = "gemini-2.5-flash"
     return items
 
 
-def extract_requirement_details(markdown: str, name: str, description: str, previously_generated: List[Dict], model_name: str = "gemini-2.5-flash") -> Dict:
+def extract_requirement_details(markdown: str, name: str, description: str, previously_generated: List[Dict], user_id: UUID = None, model_name: str = "gemini-2.5-flash") -> Dict:
+    """
+    Extract detailed requirement info from markdown.
+    
+    Args:
+        markdown: Document markdown content
+        name: Requirement name
+        description: Requirement description
+        previously_generated: Previously generated requirements
+        user_id: User UUID to fetch API key from database
+        model_name: Model name to use
+    """
+    # Get user's API key from database
+    api_key = None
+    if user_id:
+        api_key = get_user_gemini_key(user_id)
+        if not api_key:
+            logger.error("requirements_service: No API key found for user %s", user_id)
+            return {}
+    
     prior_json = json.dumps(previously_generated) if previously_generated else "[]"
     details_prompt_file = get_env_variable("REQUIREMENT_DETAILS_PROMPT_FILE", "").strip()
     if details_prompt_file:
@@ -305,7 +340,7 @@ def extract_requirement_details(markdown: str, name: str, description: str, prev
     )
     prompt = base_details_prompt + dynamic_parts
     logger.info("requirements_service: invoking details extractor for '%s', model=%s", name, model_name)
-    raw = invoke_freeform_prompt(prompt, model_name=model_name)
+    raw = invoke_freeform_prompt(prompt, model_name=model_name, api_key=api_key)
     # Log COMPLETE raw output from the agent before any parsing (for parser adjustments)
     # Always log complete output, write to file if too long for console
     try:

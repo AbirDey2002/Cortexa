@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FileText, ExternalLink, Copy, Check } from "lucide-react";
+import { FileText, ExternalLink, Copy, Check, Brain } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
@@ -7,7 +7,9 @@ import { FileChip } from "@/components/FileChip";
 import { PreviewPanel } from "@/components/PreviewPanel";
 import { useApi, normalizeMarkdownText, extractMainTextFromStored } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { ChatInput, FloatingInputContainer, ChatTrace } from "@/components/chat";
+import { ChatInput, FloatingInputContainer } from "@/components/chat";
+import { TraceModal } from "@/components/chat/TraceModal";
+import { ThinkingStream } from "@/components/chat/ThinkingStream";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -54,6 +56,7 @@ interface Message {
   hasPreview?: boolean;
   toolCall?: string;
   traces?: Traces;
+  turn_id?: string;  // Links to agent_traces for this message
 }
 
 // Files selected to be sent with the next message
@@ -104,6 +107,12 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
   const ocrBannerTimerRef = useRef<number | null>(null);
   const [pendingFiles, setPendingFiles] = useState<SelectedFile[]>([]);
   const [currentModel, setCurrentModel] = useState<string>(propCurrentModel || "gemini-2.5-flash-lite");
+
+  // Trace modal state
+  const [traceModalTurnId, setTraceModalTurnId] = useState<string | null>(null);
+
+  // Current turn ID for thinking stream (cleared on each new message)
+  const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
 
   // Sync with prop if provided
   useEffect(() => {
@@ -577,6 +586,9 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
           const msg: Message = { id: `a-${idx}`, type: "assistant", content: shown, timestamp: ts } as Message;
           if (entry.traces) {
             msg.traces = entry.traces as Traces;
+          }
+          if (entry.turn_id) {
+            msg.turn_id = entry.turn_id;
           }
           return msg;
         }).filter((msg): msg is Message => msg !== null);
@@ -1076,6 +1088,9 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
               if (entry.traces) {
                 msg.traces = entry.traces as Traces;
               }
+              if (entry.turn_id) {
+                msg.turn_id = entry.turn_id;
+              }
               return msg;
             }).filter((msg): msg is Message => msg !== null);
 
@@ -1202,7 +1217,11 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
       }
 
       // Route chat to Gemini conversation endpoint (not PF)
-      await apiPost(`/usecases/${targetUsecaseId}/gemini-chat`, chatPayload);
+      const chatResponse = await apiPost<{ status: string; usecase_id: string; turn_id?: string }>(`/usecases/${targetUsecaseId}/gemini-chat`, chatPayload);
+      // Capture turn_id for filtering ThinkingStream traces
+      if (chatResponse.turn_id) {
+        setCurrentTurnId(chatResponse.turn_id);
+      }
       setStatus("In Progress");
       setWaitingForResponse(true); // Start waiting for response
 
@@ -1750,13 +1769,6 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                                 )}
                               </div>
 
-                              {/* Traces logged to console only */}
-                              {message.type === "assistant" && message.traces && (
-                                (() => {
-                                  console.log("Trace for message " + message.id, message.traces);
-                                  return null;
-                                })()
-                              )}
 
                               {message.hasPreview && (
                                 <Button
@@ -1782,6 +1794,17 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                             >
                               <Copy className="w-4 h-4" />
                             </button>
+
+                            {/* Trace Button - only for assistant messages with turn_id */}
+                            {message.type === "assistant" && message.turn_id && (
+                              <button
+                                onClick={() => setTraceModalTurnId(message.turn_id)}
+                                className="invisible group-hover:visible p-2 text-muted-foreground hover:text-primary transition-all duration-200"
+                                title="View agent thinking trace"
+                              >
+                                <Brain className="w-4 h-4" />
+                              </button>
+                            )}
                           </div>
 
                           {/* Timestamp outside bubble */}
@@ -1842,14 +1865,14 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
                 }
               })()}
 
-              {isLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-chat-assistant border border-border rounded-xl p-4 mr-auto">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" />
-                      <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }} />
-                      <div className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
-                    </div>
+              {isLoading && usecaseId && (
+                <div className="flex justify-start w-full">
+                  <div className="w-full max-w-[95%] sm:max-w-[90%] md:max-w-[85%]">
+                    <ThinkingStream
+                      usecaseId={usecaseId}
+                      isProcessing={isLoading}
+                      turnId={currentTurnId}
+                    />
                   </div>
                 </div>
               )}
@@ -2115,6 +2138,16 @@ export function ChatInterface({ userId, usecaseId, currentModel: propCurrentMode
           setWaitingForResponse(false);
         }}
       />
+
+      {/* Trace Modal - opened by clicking Brain icon on assistant messages */}
+      {usecaseId && traceModalTurnId && (
+        <TraceModal
+          isOpen={!!traceModalTurnId}
+          onClose={() => setTraceModalTurnId(null)}
+          usecaseId={usecaseId}
+          turnId={traceModalTurnId}
+        />
+      )}
 
     </div>
   );

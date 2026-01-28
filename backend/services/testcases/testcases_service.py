@@ -10,7 +10,7 @@ from models.generator.requirement import Requirement
 from models.generator.test_case import TestCase
 from models.file_processing.ocr_records import OCROutputs
 from models.file_processing.file_metadata import FileMetadata
-from services.llm.gemini_conversational.gemini_invoker import invoke_freeform_prompt
+from services.llm.gemini_conversational.gemini_invoker import invoke_freeform_prompt, get_user_gemini_key
 from core.config import AgentLogConfigs
 import os
 import importlib
@@ -76,6 +76,7 @@ def extract_test_cases_from_scenario(
     scenario_json: Dict, 
     requirement_json: Dict,
     extracted_text: str,
+    user_id: UUID = None,
     model_name: str = "gemini-2.5-flash"
 ) -> List[Dict]:
     """
@@ -85,10 +86,20 @@ def extract_test_cases_from_scenario(
         scenario_json: The scenario JSON containing ScenarioID, ScenarioName, Flows, etc.
         requirement_json: The requirement JSON for context
         extracted_text: The original extracted text from documents
+        user_id: User UUID to fetch API key from database
+        model_name: Model name to use
     
     Returns:
         List of test case dictionaries
     """
+    # Get user's API key from database
+    api_key = None
+    if user_id:
+        api_key = get_user_gemini_key(user_id)
+        if not api_key:
+            logger.error("testcases_service: No API key found for user %s", user_id)
+            return []
+    
     # Load prompt from testcase_generator_prompt.py
     prompt_file = get_env_variable("TESTCASE_GENERATOR_PROMPT_FILE", "").strip()
     base_prompt: str
@@ -147,7 +158,7 @@ def extract_test_cases_from_scenario(
     
     scen_name = scenario_json.get("ScenarioName", "Unknown")
     logger.info("testcases_service: invoking test case generator for scenario '%s', model=%s", scen_name, model_name)
-    raw = invoke_freeform_prompt(prompt, model_name=model_name)
+    raw = invoke_freeform_prompt(prompt, model_name=model_name, api_key=api_key)
     
     # Log COMPLETE raw output from the agent before any parsing
     try:

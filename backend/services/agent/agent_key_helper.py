@@ -16,15 +16,14 @@ logger = logging.getLogger(__name__)
 
 def resolve_gemini_key(user_id: Optional[UUID], db: Optional[Session] = None) -> str:
     """
-    Resolve the Gemini API key for a user.
+    Resolve the Gemini API key for a user (BYOK only - no system fallback).
     
     Priority:
     1. User's BYOK key (if available and active)
-    2. System environment variable (GEMINI_API_KEY)
     
     Args:
         user_id: The user's UUID (None for system-level operations)
-        db: Optional database session. If not provided, only system key is checked.
+        db: Optional database session. If not provided, returns empty string.
         
     Returns:
         The API key to use, or empty string if none available.
@@ -39,13 +38,11 @@ def resolve_gemini_key(user_id: Optional[UUID], db: Optional[Session] = None) ->
                 logger.info(f"Using {source} API key for Gemini (user={user_id})")
                 return key
         except Exception as e:
-            logger.warning(f"BYOK key resolution failed, falling back to system key: {e}")
+            logger.warning(f"BYOK key resolution failed: {e}")
     
-    # Fallback to system environment variable
-    system_key = get_env_variable("GEMINI_API_KEY", "")
-    if system_key:
-        logger.debug("Using system GEMINI_API_KEY")
-    return system_key
+    # No system fallback - BYOK only
+    logger.warning("No Gemini API key available. User must provide their own key (BYOK).")
+    return ""
 
 
 def resolve_provider_key(

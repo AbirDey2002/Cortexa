@@ -138,3 +138,37 @@ class HostingConfigs:
     URL = f"http://{HOST}:{PORT}"
 
 
+class CORSConfigs:
+    """CORS configuration for API security"""
+    # Get allowed origins from environment variable
+    # Format: comma-separated list of origins
+    # Example: http://localhost:5173,https://yourdomain.com
+    _origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:8080")
+    ALLOWED_ORIGINS = [origin.strip() for origin in _origins_str.split(",") if origin.strip()]
+    
+    # In development, allow all origins if explicitly set
+    ALLOW_ALL = os.getenv("CORS_ALLOW_ALL", "false").lower() == "true"
+    
+    @classmethod
+    def get_allowed_origins(cls):
+        """Get the list of allowed origins for CORS."""
+        if cls.ALLOW_ALL:
+            return ["*"]
+        return cls.ALLOWED_ORIGINS
+
+
+class RateLimitConfigs:
+    """Rate limiting configuration"""
+    ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+    PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+
+
+class SecurityConfigs:
+    """Security-related configurations"""
+    # Environment type
+    ENVIRONMENT = os.getenv("ENVIRONMENT", "local")
+    IS_PRODUCTION = ENVIRONMENT in ["prod", "production"]
+    
+    # Encryption key validation
+    ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
+

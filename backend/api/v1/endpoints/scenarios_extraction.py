@@ -55,7 +55,8 @@ def _run_scenarios_generation(usecase_id: UUID):
             # Get the selected model from usecase, fallback to default
             from core.model_registry import get_default_model
             selected_model = record.selected_model or get_default_model()
-            logger.info(_blue(f"scenarios_extraction: using model={selected_model} for usecase={usecase_id}"))
+            user_id = record.user_id
+            logger.info(_blue(f"scenarios_extraction: using model={selected_model} for usecase={usecase_id}, user_id={user_id}"))
 
             # Fetch all requirements for usecase (ordered by display_id)
             requirements = db.query(Requirement).filter(
@@ -76,7 +77,7 @@ def _run_scenarios_generation(usecase_id: UUID):
                     logger.info(_blue(f"[SCENARIO-STATUS] usecase={usecase_id} | Processing requirement {idx}/{total_requirements} | Name='{req_name}' | Status=STARTING"))
                     
                     # Extract scenarios from requirement
-                    scenarios = extract_scenarios_from_requirement(req_text, model_name=selected_model)
+                    scenarios = extract_scenarios_from_requirement(req_text, user_id=user_id, model_name=selected_model)
                     
                     # Log LLM scenario payload (blue) before storing
                     try:

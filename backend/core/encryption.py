@@ -21,11 +21,20 @@ def get_fernet() -> Fernet:
     
     if _fernet_instance is None:
         key = os.getenv("ENCRYPTION_KEY", "")
+        environment = os.getenv("ENVIRONMENT", "local").lower()
         
         if not key:
-            # Generate a temporary key for development (NOT for production)
+            # In production, reject missing encryption key
+            if environment in ["prod", "production"]:
+                logger.error("ENCRYPTION_KEY not set in production environment!")
+                raise ValueError(
+                    "ENCRYPTION_KEY must be set in production. "
+                    "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+                )
+            
+            # Generate a temporary key for development only (NOT production)
             logger.warning(
-                "ENCRYPTION_KEY not set! Generating temporary key. "
+                "ENCRYPTION_KEY not set! Generating temporary key FOR DEVELOPMENT ONLY. "
                 "This is NOT secure for production. Set ENCRYPTION_KEY in .env"
             )
             key = Fernet.generate_key().decode()

@@ -24,6 +24,7 @@ from models.generator.test_case import TestCase
 from services.llm.gemini_conversational.history_manager import manage_chat_history_for_usecase
 from core.env_config import get_env_variable
 from core.config import AgentLogConfigs
+from services.agent.callbacks import DatabaseTraceCallback
 import importlib
 
 logger = logging.getLogger(__name__)
@@ -2605,7 +2606,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
     return all_tools, tool_map
 
 
-def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> Tuple[str, Dict[str, Any]]:
+def run_agent_turn(usecase_id, user_message: str, model: str | None = None, turn_id: UUID | None = None) -> Tuple[str, Dict[str, Any]]:
     """
     Run a single agent turn. If deepagents is available, use it for planning/traces; otherwise fallback to a simple rule-based flow.
     
@@ -2613,6 +2614,7 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
         usecase_id: The usecase identifier
         user_message: The user's message
         model: Optional model ID. If not provided, uses usecase's selected_model or default
+        turn_id: Optional turn ID to link traces to specific chat message
         
     Returns: (assistant_text, traces)
     """
@@ -2914,9 +2916,15 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
             try:
                 built_msgs = _build_agent_messages(usecase_id, user_message)
                 _log_agent_input(built_msgs, label="astream:values", usecase_id=usecase_id)
+                
+                # Initialize DB tracing callback with turn_id for linking to chat message
+                db_callback = DatabaseTraceCallback(usecase_id=usecase_id, turn_id=turn_id)
+                config = {"callbacks": [db_callback]}
+                
                 async for chunk in agent.astream(
                     {"messages": built_msgs},
                     stream_mode="values",
+                    config=config,
                 ):
                     if isinstance(chunk, dict) and "messages" in chunk:
                         msgs = chunk["messages"]
@@ -2934,7 +2942,12 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
                 # If streaming fails, fall back to single invoke
                 built_msgs3 = _build_agent_messages(usecase_id, user_message)
                 _log_agent_input(built_msgs3, label="invoke", usecase_id=usecase_id)
-                result = agent.invoke({"messages": built_msgs3})
+                
+                # Re-use DB callback with turn_id
+                db_callback = DatabaseTraceCallback(usecase_id=usecase_id, turn_id=turn_id)
+                config = {"callbacks": [db_callback]}
+                
+                result = agent.invoke({"messages": built_msgs3}, config=config)
                 if isinstance(result, dict) and "messages" in result:
                     msgs = result.get("messages")
                     if isinstance(msgs, list) and msgs:
@@ -3619,7 +3632,17 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None) -> T
                 logger.exception(_color(f"[TOOL-ERROR {name}] {ex}", "34"))
             assistant_text = "Documents read. Ask a related query."
         else:
-            assistant_text = "I can help with testing, OCR, and requirements. How can I assist you?"
+            assistant_text = (
+                "👋 Welcome to Cortexa! I'm your AI assistant for automated test case generation.\n\n"
+                "**What I can help you with:**\n"
+                "• Extract requirements from your documents (PDFs, images, text files)\n"
+                "• Generate comprehensive test scenarios and test cases\n"
+                "• Create automated test scripts from your requirements\n"
+                "• Answer questions about your testing needs\n\n"
+                "**To get started:** Please add your API key in Settings → API Keys. "
+                "Cortexa uses your own API keys (BYOK model) to ensure security and give you full control.\n\n"
+                "Once you've added your key, upload your requirements documents and I'll help you create test cases!"
+            )
         tracer.set_assistant_final(assistant_text)
         logger.info(_color(f"[AGENT] {assistant_text}", "32"))
         return assistant_text, tracer.dump()

@@ -68,7 +68,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderInfo] = {
         id=ProviderType.GEMINI,
         name="Google Gemini",
         description="Gemini models from Google",
-        env_key_name="GEMINI_API_KEY",
+        env_key_name="",  # No system key - BYOK only
         models=[
             # Gemini 2.5 Series (GA - Recommended)
             ModelInfo(id="gemini-2.5-flash", name="Gemini 2.5 Flash", description="Balanced intelligence and latency", context_window=1000000, is_default=True),

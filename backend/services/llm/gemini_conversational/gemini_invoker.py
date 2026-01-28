@@ -56,6 +56,36 @@ def _get_effective_api_key(api_key: Optional[str] = None) -> str:
         return api_key.strip()
     return GEMINI_API_KEY
 
+
+def get_user_gemini_key(user_id) -> Optional[str]:
+    """
+    Get user's Gemini API key from database.
+    
+    Args:
+        user_id: The user's UUID
+        
+    Returns:
+        Decrypted API key if found and active, None otherwise
+    """
+    from uuid import UUID
+    from db.session import get_db_context
+    from services.llm.key_resolver import KeyResolver
+    
+    try:
+        # Convert to UUID if string
+        if isinstance(user_id, str):
+            user_id = UUID(user_id)
+        
+        with get_db_context() as db:
+            resolver = KeyResolver(db)
+            key, source = resolver.resolve_key(user_id, "gemini")
+            if key:
+                logger.info(f"get_user_gemini_key: resolved key for user from {source}")
+            return key
+    except Exception as e:
+        logger.error(f"get_user_gemini_key: error resolving key: {e}")
+        return None
+
 def invoke_gemini_chat(
     query: str,
     chat_history: Optional[list] = None,
