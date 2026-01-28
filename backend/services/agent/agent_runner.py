@@ -299,6 +299,190 @@ def _log_agent_input(msgs: List[Dict[str, str]], *, label: str, usecase_id: Any)
         logger.warning(_color(f"[LOG-AGENT-INPUT] failed: {e}", "33"))
 
 
+def _format_tool_result_as_text(result: Dict[str, Any]) -> str:
+    """Convert a tool result dictionary to a human-readable text string.
+    
+    This function parses JSON tool results and returns only the necessary
+    data as text, making it easier for the LLM to process.
+    
+    Args:
+        result: The dictionary result from a tool function
+        
+    Returns:
+        A human-readable text string
+    """
+    if not isinstance(result, dict):
+        return str(result)
+    
+    # Handle error cases first
+    if "error" in result:
+        error = result.get("error", "Unknown error")
+        message = result.get("message", "")
+        if message:
+            return f"Error: {error} - {message}"
+        return f"Error: {error}"
+    
+    # PRIORITY: Return full content if available (for read_* tools)
+    # These tools need to return complete content for agent analysis
+    if "combined_markdown" in result:
+        # read_extracted_text - return full OCR content
+        content = result.get("combined_markdown", "")
+        file_name = result.get("file_name", "document")
+        total_pages = result.get("total_pages", 0)
+        header = f"=== Content from '{file_name}' ({total_pages} pages) ===\n\n"
+        return header + content
+    
+    if "requirement_text" in result:
+        # read_requirement - return full requirement content
+        content = result.get("requirement_text", "")
+        req_name = result.get("requirement_name", "")
+        display_id = result.get("display_id", "")
+        header = f"=== Requirement REQ-{display_id}: {req_name} ===\n\n"
+        return header + content
+    
+    if "scenario_text" in result:
+        # read_scenario - return full scenario content
+        content = result.get("scenario_text", "")
+        scen_name = result.get("scenario_name", "")
+        display_id = result.get("display_id", "")
+        header = f"=== Scenario TS-{display_id}: {scen_name} ===\n\n"
+        return header + content
+    
+    if "test_case_text" in result:
+        # read_testcase - return full test case content
+        content = result.get("test_case_text", "")
+        display_id = result.get("display_id", "")
+        header = f"=== Test Case TC-{display_id} ===\n\n"
+        return header + content
+    
+    # Handle success with message (for other tools)
+    if "message" in result:
+        message = result.get("message", "")
+        status = result.get("status", "")
+        if status:
+            return f"{status}: {message}"
+        return message
+    
+    # Handle status-only responses
+    if "status" in result and len(result) <= 3:
+        status = result.get("status", "")
+        extra_parts = []
+        for key, value in result.items():
+            if key not in ("status", "message"):
+                extra_parts.append(f"{key}: {value}")
+        if extra_parts:
+            return f"{status} ({', '.join(extra_parts)})"
+        return status
+    
+    # Format specific tool outputs
+    parts = []
+    
+    # Pipeline status fields
+    status_fields = ["text_extraction", "requirement_generation", "scenario_generation", "test_case_generation"]
+    has_status = any(field in result for field in status_fields)
+    if has_status:
+        for field in status_fields:
+            if field in result:
+                readable_name = field.replace("_", " ").title()
+                parts.append(f"{readable_name}: {result[field]}")
+        if "requirement_generation_confirmed" in result:
+            parts.append(f"Confirmed: {result['requirement_generation_confirmed']}")
+    
+    # File/document info
+    if "file_id" in result:
+        parts.append(f"File ID: {result['file_id']}")
+    if "file_name" in result:
+        parts.append(f"File: {result['file_name']}")
+    if "total_pages" in result:
+        parts.append(f"Pages: {result['total_pages']}")
+    if "total_chars" in result:
+        parts.append(f"Characters: {result['total_chars']}")
+    
+    # Requirements/Scenarios specific
+    if "requirements" in result:
+        reqs = result.get("requirements", [])
+        count = result.get("count", len(reqs))
+        parts.append(f"Found {count} requirements")
+        if reqs and len(reqs) <= 5:
+            for i, req in enumerate(reqs[:5], 1):
+                if isinstance(req, dict):
+                    name = req.get("name", f"Requirement {i}")
+                    parts.append(f"  {i}. {name}")
+                else:
+                    parts.append(f"  {i}. {str(req)[:100]}")
+    
+    if "display_id" in result:
+        parts.append(f"Display ID: {result['display_id']}")
+    if "requirement_name" in result:
+        parts.append(f"Requirement: {result['requirement_name']}")
+    if "scenario_name" in result:
+        parts.append(f"Scenario: {result['scenario_name']}")
+    
+    # Text content fields (abbreviated)
+    if "combined_markdown" in result:
+        md = result.get("combined_markdown", "")
+        if len(md) > 500:
+            parts.append(f"Content: {md[:500]}...")
+        else:
+            parts.append(f"Content: {md}")
+    
+    if "requirement_text" in result and "requirement_name" not in result:
+        text = result.get("requirement_text", "")
+        if len(text) > 500:
+            parts.append(f"Text: {text[:500]}...")
+        else:
+            parts.append(f"Text: {text}")
+    
+    if "scenario_text" in result and "scenario_name" not in result:
+        text = result.get("scenario_text", "")
+        if len(text) > 500:
+            parts.append(f"Text: {text[:500]}...")
+        else:
+            parts.append(f"Text: {text}")
+    
+    if "test_case_text" in result:
+        text = result.get("test_case_text", "")
+        if len(text) > 500:
+            parts.append(f"Text: {text[:500]}...")
+        else:
+            parts.append(f"Text: {text}")
+    
+    # Files list
+    if "files" in result and isinstance(result["files"], list):
+        files = result["files"]
+        parts.append(f"Files: {len(files)}")
+        for f in files[:5]:
+            if isinstance(f, dict):
+                fname = f.get("file_name", f.get("file_id", "Unknown"))
+                parts.append(f"  - {fname}")
+    
+    # Extracted text preview
+    if "extracted_text_preview" in result:
+        preview = result.get("extracted_text_preview", "")
+        if preview:
+            if len(preview) > 300:
+                parts.append(f"Preview: {preview[:300]}...")
+            else:
+                parts.append(f"Preview: {preview}")
+    
+    # If we couldn't extract specific fields, provide a general summary
+    if not parts:
+        # Summarize the keys present
+        keys = [k for k in result.keys() if k not in ("__class__",)]
+        if keys:
+            parts.append(f"Result contains: {', '.join(keys)}")
+            # Add first few simple values
+            for key in keys[:5]:
+                value = result[key]
+                if isinstance(value, (str, int, float, bool)):
+                    if isinstance(value, str) and len(value) > 100:
+                        parts.append(f"  {key}: {value[:100]}...")
+                    else:
+                        parts.append(f"  {key}: {value}")
+    
+    return "\n".join(parts) if parts else "Operation completed successfully"
+
+
 # Tool implementations (thin wrappers)
 def tool_get_usecase_status(usecase_id) -> Dict[str, Any]:
     with get_db_context() as db:
@@ -1925,7 +2109,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
     """
 
     @lc_tool
-    async def get_usecase_status() -> Dict[str, Any]:
+    async def get_usecase_status() -> str:
         """Get the current pipeline statuses (text_extraction, requirement_generation, scenario_generation, test_case_generation) for this chat's usecase."""
         name = "get_usecase_status"
         entry = tracer.start_tool(name, args_preview="{}")
@@ -1944,7 +2128,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -1952,7 +2136,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def get_documents_markdown() -> Dict[str, Any]:
+    async def get_documents_markdown() -> str:
         """Retrieve all extracted documents' Markdown (per-file and combined) for this usecase. Use to read/understand document contents (OCR results)."""
         name = "get_documents_markdown"
         entry = tracer.start_tool(name, args_preview="{}")
@@ -1973,7 +2157,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms chars_read={len(combined)}", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -1981,7 +2165,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def start_requirement_generation() -> Dict[str, Any]:
+    async def start_requirement_generation() -> str:
         """
         Request requirement generation. **CRITICAL: You MUST call this tool when the user asks to generate requirements.**
         
@@ -2015,7 +2199,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2023,7 +2207,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def start_scenario_generation() -> Dict[str, Any]:
+    async def start_scenario_generation() -> str:
         """
         Request scenario generation. **CRITICAL: You MUST call this tool when the user asks to generate scenarios.**
         
@@ -2057,7 +2241,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2065,7 +2249,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def get_requirements() -> Dict[str, Any]:
+    async def get_requirements() -> str:
         """
         Fetch generated requirements for analysis. ONLY call when requirement_generation is Completed.
         Returns requirements as ephemeral context (do NOT include raw JSON in your response).
@@ -2089,7 +2273,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms count={count}", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2097,7 +2281,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def check_text_extraction_status(file_id: str = None) -> Dict[str, Any]:
+    async def check_text_extraction_status(file_id: str = None) -> str:
         """
         Check text extraction status. If file_id provided, check that file. If not provided, check all files in usecase.
         Call this tool to verify extraction status after file upload.
@@ -2120,7 +2304,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2128,7 +2312,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def show_extracted_text(file_id: str = None, file_name: str = None) -> Dict[str, Any]:
+    async def show_extracted_text(file_id: str = None, file_name: str = None) -> str:
         """
         Create [modal] placeholder in chat_history to display PDF content to user.
         ONLY call when user explicitly requests to see/view/display PDF content.
@@ -2264,7 +2448,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2272,7 +2456,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def read_extracted_text(file_name: str) -> Dict[str, Any]:
+    async def read_extracted_text(file_name: str) -> str:
         """
         Read full OCR text from database for agent analysis.
         Call when user asks questions about document content and you need to read the OCR text to answer.
@@ -2305,7 +2489,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms pages={pages_count} chars={total_chars}", "34"))
             # Return FULL result - no truncation for agent
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2313,7 +2497,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def read_requirement(display_id: int) -> Dict[str, Any]:
+    async def read_requirement(display_id: int) -> str:
         """
         Read full requirement content from database by display_id for agent analysis.
         Call when user asks questions about a specific requirement and you need to read its content to answer.
@@ -2345,7 +2529,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms chars={total_chars}", "34"))
             # Return FULL result - no truncation for agent
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2353,7 +2537,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def read_scenario(display_id: int) -> Dict[str, Any]:
+    async def read_scenario(display_id: int) -> str:
         """
         Read full scenario content from database by display_id for agent analysis.
         Call when user asks questions about a specific scenario and you need to read its content to answer.
@@ -2385,7 +2569,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms chars={total_chars}", "34"))
             # Return FULL result - no truncation for agent
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2393,7 +2577,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def show_requirements() -> Dict[str, Any]:
+    async def show_requirements() -> str:
         """
         Create [modal] placeholder in chat_history to display requirements to user.
         **MANDATORY**: You MUST call this tool when user explicitly requests to see/view/display requirements.
@@ -2421,7 +2605,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2429,7 +2613,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def show_scenarios() -> Dict[str, Any]:
+    async def show_scenarios() -> str:
         """
         Create [modal] placeholder in chat_history to display scenarios to user.
         **MANDATORY**: You MUST call this tool when user explicitly requests to see/view/display scenarios.
@@ -2457,7 +2641,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2465,7 +2649,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def start_testcase_generation() -> Dict[str, Any]:
+    async def start_testcase_generation() -> str:
         """
         Request test case generation. **CRITICAL: You MUST call this tool when the user asks to generate test cases.**
         
@@ -2499,7 +2683,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2507,7 +2691,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def read_testcase(display_id: int) -> Dict[str, Any]:
+    async def read_testcase(display_id: int) -> str:
         """
         Read full test case content from database by display_id for agent analysis.
         Call when user asks questions about a specific test case and you need to read its content to answer.
@@ -2535,7 +2719,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms chars={total_chars}", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
@@ -2543,7 +2727,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             raise
 
     @lc_tool
-    async def show_testcases() -> Dict[str, Any]:
+    async def show_testcases() -> str:
         """
         Create [modal] placeholder in chat_history to display test cases to user.
         **MANDATORY**: You MUST call this tool when user explicitly requests to see/view/display test cases.
@@ -2571,7 +2755,7 @@ def build_tools(usecase_id, tracer: TraceCollector, status: Dict[str, Any] = Non
             except Exception:
                 pass
             logger.info(_color(f"[TOOL-END {name}] duration={duration_ms}ms", "34"))
-            return result
+            return _format_tool_result_as_text(result)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             tracer.finish_tool(entry, False, error=str(e), duration_ms=duration_ms)
