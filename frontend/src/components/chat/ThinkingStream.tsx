@@ -64,6 +64,7 @@ export const ThinkingStream: React.FC<ThinkingStreamProps> = ({
   const [polling, setPolling] = useState(false);
   const pollingRef = useRef(false);
   const mountedRef = useRef(true);
+  const startTimeRef = useRef(new Date());
 
   useEffect(() => {
     mountedRef.current = true;
@@ -87,7 +88,7 @@ export const ThinkingStream: React.FC<ThinkingStreamProps> = ({
     setPolling(true);
 
     let lastStepNumber = 0;
-    const pollInterval = 200; // Poll every 200ms
+    const pollInterval = 10000; // Poll every 10s as requested to avoid RPM limits
 
     const poll = async () => {
       // Get auth token
@@ -125,10 +126,20 @@ export const ThinkingStream: React.FC<ThinkingStreamProps> = ({
           const allTraces: TraceStep[] = data.traces || [];
 
           if (allTraces.length > 0 && mountedRef.current) {
-            const maxStep = Math.max(...allTraces.map(t => t.step_number));
-            if (maxStep > lastStepNumber) {
+            // Filter traces that are newer than the start time
+            const newTraces = allTraces.filter(t => {
+              if (!t.created_at) return true; // Include if no timestamp
+              return new Date(t.created_at) > startTimeRef.current;
+            });
+
+            // Only update if we have new traces or if we need to clear previous state
+            const maxStep = newTraces.length > 0 ? Math.max(...newTraces.map(t => t.step_number)) : 0;
+
+            // Update if we have content (or if we need to ensure it's empty initially)
+            // We use a JSON string comparison to avoid unnecessary re-renders if content is identical
+            if (JSON.stringify(newTraces) !== JSON.stringify(traces)) {
               lastStepNumber = maxStep;
-              setTraces(allTraces);
+              setTraces(newTraces);
             }
           }
 

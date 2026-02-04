@@ -18,7 +18,7 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
   const [activeUsecaseId, setActiveUsecaseId] = useState<string | null>(null);
   const { apiGet, apiPost } = useApi();
   const navigate = useNavigate();
-  
+
   // Load model from usecase when usecase changes
   useEffect(() => {
     if (activeUsecaseId) {
@@ -34,31 +34,13 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
     }
   }, [activeUsecaseId, apiGet]);
 
-  // Load usecases and set active usecase if provided
+  // Set active usecase if provided (skip validation fetch to avoid loops)
   useEffect(() => {
-    if (!userId) return;
-    
-    (async () => {
-      try {
-        // Try to get existing usecases
-        const usecases = await apiGet<any[]>("/frontend/usecases/list");
-        
-        // If there's an initial usecase ID from the URL, use it
-        if (initialUsecaseId && usecases) {
-          // Verify the usecase exists
-          const usecaseExists = usecases.some(u => u.usecase_id === initialUsecaseId);
-          if (usecaseExists) {
-            setActiveUsecaseId(initialUsecaseId);
-            return;
-          }
-        }
-        
-        // Don't automatically set an active usecase - let the user choose
-      } catch (e) {
-      }
-    })();
-  }, [initialUsecaseId, onUsecaseChange, userId, apiGet]);
-  
+    if (initialUsecaseId) {
+      setActiveUsecaseId(initialUsecaseId);
+    }
+  }, [initialUsecaseId]);
+
   // Listen for usecase creation events from ChatInterface
   useEffect(() => {
     const handleUsecaseCreated = (event: Event) => {
@@ -68,7 +50,7 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
         if (onUsecaseChange) onUsecaseChange(customEvent.detail.usecaseId);
       }
     };
-    
+
     window.addEventListener('usecase-created', handleUsecaseCreated);
     return () => {
       window.removeEventListener('usecase-created', handleUsecaseCreated);
@@ -99,14 +81,14 @@ export function Layout({ children, initialUsecaseId, onUsecaseChange, userId }: 
             }}
           />
         </Sidebar>
-        
+
         <SidebarInset>
           <div className="flex items-center h-12 sm:h-14 border-b border-border glassmorphism-navbar sticky top-0 z-40 bg-background">
             <div className="flex items-center h-full pl-2 sm:pl-4">
               <SidebarTrigger className="mr-1 sm:mr-2 inline-flex md:peer-data-[state=expanded]:hidden" />
             </div>
             <div className="flex-1">
-              <TopNavigation 
+              <TopNavigation
                 currentModel={currentModel}
                 onModelChange={async (modelId: string) => {
                   setCurrentModel(modelId);

@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { useAuth } from "@/contexts/AuthContext";
-import { useCallback } from "react";
+import { useCallback, useRef, useEffect } from "react";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -71,13 +71,22 @@ async function apiRequestBase<T>(
 export function useApi() {
   const { getAccessTokenSilently, isAuthenticated } = useAuth();
 
+  // Use refs to stabilize dependencies
+  const getAccessTokenSilentlyRef = useRef(getAccessTokenSilently);
+  const isAuthenticatedRef = useRef(isAuthenticated);
+
+  useEffect(() => {
+    getAccessTokenSilentlyRef.current = getAccessTokenSilently;
+    isAuthenticatedRef.current = isAuthenticated;
+  }, [getAccessTokenSilently, isAuthenticated]);
+
   const apiGet = useCallback(async <T,>(path: string): Promise<T> => {
     const headers: Record<string, string> = {};
 
-    // Add JWT token if authenticated
-    if (isAuthenticated) {
+    // Add JWT token if authenticated (read from ref)
+    if (isAuthenticatedRef.current) {
       try {
-        const token = await getAccessTokenSilently();
+        const token = await getAccessTokenSilentlyRef.current();
         if (token) {
           headers.Authorization = `Bearer ${token}`;
         }
@@ -89,11 +98,19 @@ export function useApi() {
       headers,
     });
 
+    if (path.includes("/frontend/usecases/list")) {
+      console.groupCollapsed(`[DEBUG] API GET ${path}`);
+      console.log("Headers:", headers);
+      // Log stack as string to ensure it's visible/copiable
+      console.warn("STACK TRACE:", new Error().stack);
+      console.groupEnd();
+    }
+
     if (!res.ok) {
       // Handle 401 by attempting token refresh
-      if (res.status === 401 && isAuthenticated) {
+      if (res.status === 401 && isAuthenticatedRef.current) {
         try {
-          const token = await getAccessTokenSilently();
+          const token = await getAccessTokenSilentlyRef.current();
           if (token) {
             // Retry with new token
             const retryRes = await fetch(`${API_BASE_URL}${path}`, {
@@ -109,7 +126,7 @@ export function useApi() {
     }
 
     return res.json();
-  }, [isAuthenticated, getAccessTokenSilently]);
+  }, []); // Empty dependencies = STABLE REFERENCE FOREVER
 
   const apiRequest = useCallback(async <T,>(
     method: string,
@@ -128,9 +145,9 @@ export function useApi() {
     const requestHeaders: Record<string, string> = { ...extraHeaders };
 
     // Add JWT token if authenticated
-    if (isAuthenticated) {
+    if (isAuthenticatedRef.current) {
       try {
-        const token = await getAccessTokenSilently();
+        const token = await getAccessTokenSilentlyRef.current();
         if (token) {
           requestHeaders.Authorization = `Bearer ${token}`;
         }
@@ -158,9 +175,9 @@ export function useApi() {
 
     if (!res.ok) {
       // Handle 401 by attempting token refresh
-      if (res.status === 401 && isAuthenticated) {
+      if (res.status === 401 && isAuthenticatedRef.current) {
         try {
-          const token = await getAccessTokenSilently();
+          const token = await getAccessTokenSilentlyRef.current();
           if (token) {
             // Retry with new token
             const retryConfig = { ...config };
@@ -178,7 +195,7 @@ export function useApi() {
     }
 
     return res.json();
-  }, [isAuthenticated, getAccessTokenSilently]);
+  }, []); // Empty dependencies
 
   const apiPost = useCallback(async <T,>(
     path: string,

@@ -19,10 +19,10 @@ class DatabaseTraceCallback(BaseCallbackHandler):
     Callback handler that logs agent steps (thoughts, tool calls) to the database.
     """
     
-    def __init__(self, usecase_id: UUID, turn_id: UUID = None):
+    def __init__(self, usecase_id: UUID, turn_id: UUID = None, initial_step: int = 0):
         self.usecase_id = usecase_id
         self.turn_id = turn_id  # Links traces to specific chat turn
-        self.step_counter = 0
+        self.step_counter = initial_step
         self.current_run_id = None
 
     def on_llm_start(

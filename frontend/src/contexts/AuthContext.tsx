@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, ReactNode, useCallback, useMemo, useRef } from "react";
 import { useAuth0, User } from "@auth0/auth0-react";
 
 interface AuthContextType {
@@ -55,11 +55,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Auto-sync user with backend when authenticated
+  const isSyncingRef = useRef(false);
+  const lastSyncedSubRef = useRef<string | null>(null);
+
   useEffect(() => {
     const syncUser = async () => {
-      if (auth0IsAuthenticated && auth0User) {
+      if (auth0IsAuthenticated && auth0User && auth0User.sub) {
+        // Prevent redundant syncs
+        if (isSyncingRef.current || lastSyncedSubRef.current === auth0User.sub) {
+          return;
+        }
+
+        isSyncingRef.current = true;
         try {
-          const token = await auth0GetAccessTokenSilently();
+          const token = await (auth0GetAccessTokenSilentlyRef.current ? auth0GetAccessTokenSilentlyRef.current() : "");
           const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 
           const response = await fetch(`${backendUrl}/users/sync`, {
@@ -73,6 +82,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (response.ok) {
             const data = await response.json();
             if (data.user_id) {
+              // Mark as successfully synced for this sub
+              lastSyncedSubRef.current = auth0User.sub || "";
+
               // Ensure session storage matches backend
               const currentStoredId = sessionStorage.getItem(SESSION_STORAGE_KEY);
               if (currentStoredId !== data.user_id) {
@@ -84,12 +96,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         } catch (error) {
           console.error("Error syncing user:", error);
+        } finally {
+          isSyncingRef.current = false;
         }
       }
     };
 
     syncUser();
-  }, [auth0IsAuthenticated, auth0User, auth0GetAccessTokenSilently]);
+  }, [auth0IsAuthenticated, auth0User?.sub]); // Only re-run if auth state or user ID changes
 
   // Check sessionStorage on focus (for same-tab changes)
   useEffect(() => {
@@ -128,26 +142,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   };
 
-  const getAccessTokenSilently = async (): Promise<string> => {
+  // Use refs to stabilize values for context functions
+  const auth0GetAccessTokenSilentlyRef = useRef(auth0GetAccessTokenSilently);
+  useEffect(() => {
+    auth0GetAccessTokenSilentlyRef.current = auth0GetAccessTokenSilently;
+  }, [auth0GetAccessTokenSilently]);
+
+  const getAccessTokenSilently = useCallback(async (): Promise<string> => {
     try {
-      return await auth0GetAccessTokenSilently();
+      if (auth0GetAccessTokenSilentlyRef.current) {
+        return await auth0GetAccessTokenSilentlyRef.current();
+      }
+      return "";
     } catch (error) {
       throw error;
     }
-  };
+  }, []); // Empty dependencies = stable reference
+
+  // Debug logging
+  useEffect(() => {
+    console.log("[AuthContext] State changed:", {
+      isAuthenticated: auth0IsAuthenticated && !!userId,
+      userId,
+      auth0IsAuthenticated,
+      isLoading: auth0IsLoading
+    });
+  }, [auth0IsAuthenticated, userId, auth0IsLoading]);
+
+  const contextValue = useMemo<AuthContextType>(() => ({
+    isAuthenticated: auth0IsAuthenticated && !!userId,
+    userId,
+    user: auth0User,
+    login,
+    logout,
+    getAccessTokenSilently,
+    isLoading: auth0IsLoading,
+  }), [
+    auth0IsAuthenticated,
+    userId,
+    auth0User,
+    login,
+    logout,
+    getAccessTokenSilently,
+    auth0IsLoading
+  ]);
 
   return (
-    <AuthContext.Provider
-      value={{
-        isAuthenticated: auth0IsAuthenticated && !!userId,
-        userId,
-        user: auth0User,
-        login,
-        logout,
-        getAccessTokenSilently,
-        isLoading: auth0IsLoading,
-      }}
-    >
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

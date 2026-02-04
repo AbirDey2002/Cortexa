@@ -63,6 +63,13 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
     } | null;
   }>>(new Map());
 
+  // Use a ref for usecases to access latest value in polling intervals without restarting them
+  const usecasesRef = useRef<UsecaseListItem[]>([]);
+  useEffect(() => {
+    usecasesRef.current = usecases;
+    console.log("[AppSidebar] usecases updated, count:", usecases.length);
+  }, [usecases]);
+
   // Separate interval refs for Stage 1 and Stage 2 polling
   const stage1PollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const stage2PollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -143,6 +150,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
 
   // Stage 1: Poll for conversation-based naming (when name is still "Chat X")
   useEffect(() => {
+    console.log("[AppSidebar] Stage 1 polling effect running", { activeUsecaseId, userId });
     if (!activeUsecaseId || !userId) {
       // Clean up Stage 1 polling if no active use case
       if (stage1PollIntervalRef.current) {
@@ -158,7 +166,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
       stage1PollIntervalRef.current = null;
     }
 
-    const usecase = usecases.find(u => u.usecase_id === activeUsecaseId);
+    const usecase = usecasesRef.current.find(u => u.usecase_id === activeUsecaseId);
     if (!usecase) return;
 
     // Check if name is still default "Chat X"
@@ -295,10 +303,11 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
         stage1PollIntervalRef.current = null;
       }
     };
-  }, [activeUsecaseId, userId, usecases, apiGet]);
+  }, [activeUsecaseId, userId, apiGet]); // Removed usecases from deps
 
   // Stage 2: Poll for document-based naming (when text extraction is completed)
   useEffect(() => {
+    console.log("[AppSidebar] Stage 2 polling effect running", { activeUsecaseId, userId });
     if (!activeUsecaseId || !userId) {
       // Clean up Stage 2 polling if no active use case
       if (stage2PollIntervalRef.current) {
@@ -316,7 +325,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
 
     // Top-level check: If name has already changed from initialName, stop polling
     // This is similar to Stage 1's top-level check
-    const usecase = usecases.find(u => u.usecase_id === activeUsecaseId);
+    const usecase = usecasesRef.current.find(u => u.usecase_id === activeUsecaseId);
     if (usecase) {
       const currentState = namingStateRef.current.get(activeUsecaseId);
       const stage2State = currentState?.stage2;
@@ -345,7 +354,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
     const checkAndStartPolling = async () => {
       try {
         // Check if this use case exists in our list
-        const usecase = usecases.find(u => u.usecase_id === activeUsecaseId);
+        const usecase = usecasesRef.current.find(u => u.usecase_id === activeUsecaseId);
         if (!usecase) return;
 
         // Check text extraction status
@@ -538,7 +547,7 @@ export function AppSidebar({ userId, activeUsecaseId, onSelectUsecase, onNewUsec
         stage2PollIntervalRef.current = null;
       }
     };
-  }, [activeUsecaseId, userId, usecases, apiGet]);
+  }, [activeUsecaseId, userId, apiGet]); // Removed usecases from deps
 
   const handleNewChat = async () => {
     setSelectedChat(null);

@@ -22,6 +22,7 @@ from models.generator.requirement import Requirement
 from models.generator.scenario import Scenario
 from models.generator.test_case import TestCase
 from services.llm.gemini_conversational.history_manager import manage_chat_history_for_usecase
+from services.llm.gemini_conversational.faithfulness_agent import FaithfulnessAgent
 from core.env_config import get_env_variable
 from core.config import AgentLogConfigs
 from services.agent.callbacks import DatabaseTraceCallback
@@ -158,6 +159,68 @@ def _extract_assistant_text(raw: Any) -> str:
         return s[:4000]
     except Exception:
         return ""
+
+
+def _extract_clean_text_for_faithfulness(content: Any) -> str:
+    """
+    Extract clean text from agent message content for faithfulness evaluation.
+    Filters out signatures, metadata, and other noise.
+    Handles various content formats: string, list of dicts, raw objects.
+    """
+    try:
+        # Case 1: Already a clean string
+        if isinstance(content, str):
+            # Check if it looks like a stringified list/dict
+            if content.strip().startswith("[") or content.strip().startswith("{"):
+                pass  # Will be processed below
+            else:
+                return content.strip()
+        
+        # Case 2: List of content chunks (e.g., [{'type': 'text', 'text': '...', 'extras': {...}}])
+        if isinstance(content, list):
+            texts = []
+            for chunk in content:
+                if isinstance(chunk, dict):
+                    # Extract only the 'text' field, ignore 'extras', 'signature', etc.
+                    if "text" in chunk:
+                        texts.append(str(chunk["text"]))
+                    elif "content" in chunk:
+                        texts.append(str(chunk["content"]))
+                elif isinstance(chunk, str):
+                    texts.append(chunk)
+            if texts:
+                return "\n".join(texts).strip()
+        
+        # Case 3: Dict with text field
+        if isinstance(content, dict):
+            if "text" in content:
+                return str(content["text"]).strip()
+            if "content" in content:
+                return str(content["content"]).strip()
+        
+        # Case 4: Stringified list - parse and extract text
+        s = str(content)
+        if s.strip().startswith("["):
+            try:
+                import ast
+                parsed = ast.literal_eval(s)
+                if isinstance(parsed, list):
+                    return _extract_clean_text_for_faithfulness(parsed)
+            except Exception:
+                # Fall back to regex extraction
+                import re
+                texts = []
+                for m in re.finditer(r"'text'\s*:\s*'([^']*(?:''[^']*)*)'", s):
+                    texts.append(m.group(1).replace("''", "'"))
+                for m in re.finditer(r'"text"\s*:\s*"([^"]*(?:\\"[^"]*)*)"', s):
+                    texts.append(m.group(1).replace('\\"', '"'))
+                if texts:
+                    return "\n".join(texts).strip()
+        
+        # Fallback: return string representation (limited)
+        return s[:4000].strip()
+    except Exception:
+        return str(content)[:4000] if content else ""
 
 
 def _build_agent_messages(usecase_id: Any, user_message: str) -> List[Dict[str, str]]:
@@ -2929,240 +2992,410 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None, turn
     # Build tools with status-based filtering
     tools, tool_map = build_tools(usecase_id, tracer, status=status)
 
-    # Determine which model to use
-    from core.model_registry import get_default_model, is_valid_model
-    from db.session import get_db_context
-    
-    selected_model = model
-    if not selected_model:
-        # Get from usecase if available
-        try:
-            with get_db_context() as db:
-                from models.usecase.usecase import UsecaseMetadata
-                rec = db.query(UsecaseMetadata).filter(
-                    UsecaseMetadata.usecase_id == usecase_id,
-                    UsecaseMetadata.is_deleted == False,
-                ).first()
-                if rec and rec.selected_model:
-                    selected_model = rec.selected_model
-        except Exception:
-            pass
-    
-    # Fallback to default if not set or invalid
-    if not selected_model or not is_valid_model(selected_model):
-        selected_model = get_default_model()
-    
-    try:
-        # Provide a LangChain model instance to DeepAgents
-        # Use unified invoker for multi-provider BYOK support
-        from services.llm.unified_invoker import get_chat_model_for_user, InvokerError, _get_provider_from_model
+    # Helper to create fresh model instance for each event loop execution
+    def _create_model_instance():
+        from core.model_registry import get_default_model, is_valid_model
+        from db.session import get_db_context
         
-        # Get user_id from usecase for BYOK resolution
-        usecase_user_id = None
-        lc_model = None
-        model_label = "unknown"
-        
-        try:
-            with get_db_context() as _db:
-                from models.usecase.usecase import UsecaseMetadata
-                _rec = _db.query(UsecaseMetadata).filter(
-                    UsecaseMetadata.usecase_id == usecase_id,
-                    UsecaseMetadata.is_deleted == False,
-                ).first()
-                if _rec:
-                    usecase_user_id = _rec.user_id
-                    # Use unified invoker for multi-provider support
-                    try:
-                        lc_model, provider, key_source = get_chat_model_for_user(
-                            user_id=usecase_user_id,
-                            model_id=selected_model,
-                            db=_db,
-                            temperature=0.7,
-                            max_tokens=2048
-                        )
-                        model_label = f"{provider}:{selected_model} (key:{key_source})"
-                        logger.info(_color(f"[BYOK] Using {model_label}", "34"))
-                    except InvokerError as ie:
-                        logger.error(_color(f"[BYOK] No API key configured: {ie}", "31"))
-                        raise ValueError(f"No API key configured. Please add your API key in Settings → API Keys. Error: {ie}")
-        except ValueError:
-            raise  # Re-raise ValueError for no API key
-        except Exception as _e:
-            logger.error(_color(f"[BYOK] Unified invoker setup failed: {_e}", "31"))
-            raise ValueError(f"Failed to initialize LLM. Please configure your API key in Settings → API Keys. Error: {_e}")
-        
-        # No fallback - user must have configured a key
-        if lc_model is None:
-            raise ValueError("No LLM model available. Please configure your API key in Settings → API Keys.")
-
-        from deepagents import create_deep_agent  # type: ignore
-
-        logger.info(_color(f"[AGENT-INIT] deepagents using model={model_label}", "34"))
-
-        # Build and possibly summarize chat history if extremely long (>200k words)
-        try:
-            with get_db_context() as _db:
-                rec = _db.query(UsecaseMetadata).filter(
-                    UsecaseMetadata.usecase_id == usecase_id,
-                    UsecaseMetadata.is_deleted == False,
-                ).first()
-                if rec:
-                    hist = rec.chat_history or []
-                    # Estimate words across user/system texts ignoring structured traces
-                    def _entry_text(e: Any) -> str:
-                        if isinstance(e, dict):
-                            if "user" in e:
-                                return str(e.get("user") or "")
-                            if "system" in e:
-                                return _extract_assistant_text(e.get("system"))
-                        return ""
-                    total_words = 0
-                    for e in hist:
-                        t = _entry_text(e)
-                        if t:
-                            total_words += len(t.split())
-                    if total_words > 200000:
-                        # Use already-resolved GEMINI_API_KEY from BYOK system
-                        try:
-                            import asyncio as _asyncio
-                            context, updated_history, updated_summary, summarized = _asyncio.run(
-                                manage_chat_history_for_usecase(
-                                    usecase_id=usecase_id,
-                                    chat_history=hist,
-                                    chat_summary=getattr(rec, "chat_summary", None),
-                                    user_query=user_message,
-                                    api_key=GEMINI_API_KEY,  # Uses BYOK resolved key
-                                    db=_db,
-                                    model_name="gemini-2.5-flash",
-                                )
-                            )
-                            # Values persisted inside manager; nothing else needed here
-                            logger.info(_color(f"[HISTORY] Summarized due to size words={total_words}", "34"))
-                        except Exception as _e:
-                            logger.warning(_color(f"[HISTORY] summarization failed: {_e}", "33"))
-        except Exception:
-            pass
-
-        # Prefer file-based prompt if provided to ease multiline editing
-        sys_prompt_file = get_env_variable("AGENT_SYSTEM_PROMPT_FILE", "").strip()
-        system_prompt_value = None
-        if sys_prompt_file:
+        target_model = model
+        if not target_model:
             try:
-                import os as _os
-                if _os.path.exists(sys_prompt_file):
-                    with open(sys_prompt_file, "r", encoding="utf-8") as f:
-                        system_prompt_value = f.read()
-            except Exception:
-                system_prompt_value = None
-        if not system_prompt_value:
-            # Try module-based system prompt
-            try:
-                mod_path = get_env_variable("AGENT_SYSTEM_PROMPT_MODULE", "").strip()
-                if mod_path:
-                    mod = importlib.import_module(mod_path)
-                    # Use module docstring or exported variable named 'prompt'
-                    val = getattr(mod, "prompt", None)
-                    if val is None:
-                        val = getattr(mod, "__doc__", "") or ""
-                    system_prompt_value = str(val or "")
-            except Exception:
-                system_prompt_value = None
-        if not system_prompt_value:
-            # Load from module
-            try:
-                from services.llm.prompts.main_agent_prompt import prompt as base_prompt
-                system_prompt_value = base_prompt
-            except Exception:
-                system_prompt_value = get_env_variable("AGENT_SYSTEM_PROMPT", "")
-        
-        # Generate dynamic prompt section based on current status
-        if system_prompt_value:
-            system_prompt_value = _generate_dynamic_prompt_section(status, system_prompt_value)
-        
-        if AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT:
-            try:
-                sp = system_prompt_value or ""
-                if len(sp) > AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT_MAX_LENGTH:
-                    sp = sp[:AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT_MAX_LENGTH] + "... [TRUNCATED]"
-                logger.info("\033[33m[AGENT SYSTEM PROMPT]\n%s\033[0m", sp)
+                with get_db_context() as db:
+                    from models.usecase.usecase import UsecaseMetadata
+                    rec = db.query(UsecaseMetadata).filter(
+                        UsecaseMetadata.usecase_id == usecase_id,
+                        UsecaseMetadata.is_deleted == False,
+                    ).first()
+                    if rec and rec.selected_model:
+                        target_model = rec.selected_model
             except Exception:
                 pass
+        
+        if not target_model or not is_valid_model(target_model):
+            target_model = get_default_model()
+            
+        try:
+            from services.llm.unified_invoker import get_chat_model_for_user, InvokerError
+            
+            generated_model = None
+            try:
+                with get_db_context() as _db:
+                    from models.usecase.usecase import UsecaseMetadata
+                    _rec = _db.query(UsecaseMetadata).filter(
+                        UsecaseMetadata.usecase_id == usecase_id,
+                        UsecaseMetadata.is_deleted == False,
+                    ).first()
+                    if _rec:
+                        try:
+                            generated_model, provider, key_source = get_chat_model_for_user(
+                                user_id=_rec.user_id,
+                                model_id=target_model,
+                                db=_db,
+                                temperature=0.7,
+                                max_tokens=2048
+                            )
+                        except InvokerError as ie:
+                             raise ValueError(f"No API key configured: {ie}")
+            except ValueError:
+                raise
+            except Exception as _e:
+                raise ValueError(f"Failed to initialize LLM: {_e}")
+                
+            if generated_model is None:
+                raise ValueError("No LLM model available.")
+                
+            return generated_model
+        except Exception:
+             raise
+             
+    from deepagents import create_deep_agent
 
-        agent = create_deep_agent(
-            tools=tools,
-            model=lc_model,
-            system_prompt=system_prompt_value,
-        )
 
-        async def _run() -> str:
+
+    # Build and possibly summarize chat history if extremely long (>200k words)
+    try:
+        with get_db_context() as _db:
+            rec = _db.query(UsecaseMetadata).filter(
+                UsecaseMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.is_deleted == False,
+            ).first()
+            if rec:
+                hist = rec.chat_history or []
+                # Estimate words across user/system texts ignoring structured traces
+                def _entry_text(e: Any) -> str:
+                    if isinstance(e, dict):
+                        if "user" in e:
+                            return str(e.get("user") or "")
+                        if "system" in e:
+                            return _extract_assistant_text(e.get("system"))
+                    return ""
+                total_words = 0
+                for e in hist:
+                    t = _entry_text(e)
+                    if t:
+                        total_words += len(t.split())
+                if total_words > 200000:
+                    # Use already-resolved GEMINI_API_KEY from BYOK system
+                    try:
+                        import asyncio as _asyncio
+                        context, updated_history, updated_summary, summarized = _asyncio.run(
+                            manage_chat_history_for_usecase(
+                                usecase_id=usecase_id,
+                                chat_history=hist,
+                                chat_summary=getattr(rec, "chat_summary", None),
+                                user_query=user_message,
+                                api_key="",  # Value not available in this scope, passing empty to let manager handle or fail safely
+                                db=_db,
+                                model_name="gemini-2.5-flash",
+                            )
+                        )
+                        # Values persisted inside manager; nothing else needed here
+                        logger.info(_color(f"[HISTORY] Summarized due to size words={total_words}", "34"))
+                    except Exception as _e:
+                        logger.warning(_color(f"[HISTORY] summarization failed: {_e}", "33"))
+    except Exception:
+        pass
+
+    # Prefer file-based prompt if provided to ease multiline editing
+    sys_prompt_file = get_env_variable("AGENT_SYSTEM_PROMPT_FILE", "").strip()
+    system_prompt_value = None
+    if sys_prompt_file:
+        try:
+            import os as _os
+            if _os.path.exists(sys_prompt_file):
+                with open(sys_prompt_file, "r", encoding="utf-8") as f:
+                    system_prompt_value = f.read()
+        except Exception:
+            system_prompt_value = None
+    if not system_prompt_value:
+        # Try module-based system prompt
+        try:
+            mod_path = get_env_variable("AGENT_SYSTEM_PROMPT_MODULE", "").strip()
+            if mod_path:
+                mod = importlib.import_module(mod_path)
+                # Use module docstring or exported variable named 'prompt'
+                val = getattr(mod, "prompt", None)
+                if val is None:
+                    val = getattr(mod, "__doc__", "") or ""
+                system_prompt_value = str(val or "")
+        except Exception:
+            system_prompt_value = None
+    if not system_prompt_value:
+        # Load from module
+        try:
+            from services.llm.prompts.main_agent_prompt import prompt as base_prompt
+            system_prompt_value = base_prompt
+        except Exception:
+            system_prompt_value = get_env_variable("AGENT_SYSTEM_PROMPT", "")
+    
+    # Generate dynamic prompt section based on current status
+    if system_prompt_value:
+        system_prompt_value = _generate_dynamic_prompt_section(status, system_prompt_value)
+    
+    if AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT:
+        try:
+            sp = system_prompt_value or ""
+            if len(sp) > AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT_MAX_LENGTH:
+                sp = sp[:AgentLogConfigs.LOG_AGENT_SYSTEM_PROMPT_MAX_LENGTH] + "... [TRUNCATED]"
+            logger.info("\033[33m[AGENT SYSTEM PROMPT]\n%s\033[0m", sp)
+        except Exception:
+            pass
+
+    try:
+        async def _run(current_message: str) -> str:
+            # Create fresh model and agent for this execution loop
+            lc_model = _create_model_instance()
+
+            # --- FAITHFULNESS TOOL INJECTION ---
+            faithfulness_agent = FaithfulnessAgent()
+            
+            @lc_tool
+            def check_faithfulness(draft_answer: str) -> Dict[str, Any]:
+                """
+                Verifies if the generated response is faithful to the user's query.
+                Call this tool BEFORE returning your final answer.
+                If is_faithful is False, you MUST revise your answer based on the reason provided.
+                
+                Args:
+                    draft_answer: The answer you plan to provide to the user.
+                    
+                Returns:
+                    JSON with score (0-100), is_faithful (bool), and reason.
+                """
+                # Use fresh model for check (avoids event loop issues)
+                faith_model = _create_model_instance()
+                
+                # Trace start
+                f_args = json.dumps({"action": "evaluate", "response_preview": draft_answer[:50]})
+                trace_entry = tracer.start_tool("check_faithfulness", f_args)
+                
+                try:
+                    # Run sync evaluation
+                    result = faithfulness_agent.evaluate(current_message, draft_answer, llm=faith_model)
+                    
+                    tracer.finish_tool(
+                        trace_entry, 
+                        ok=True, 
+                        result_preview=json.dumps(result)
+                    )
+                    
+                    # Return Directive String to Agent (not raw JSON)
+                    if result.get("is_faithful"):
+                        return (
+                            f"Verification PASSED (Score: {result.get('score')}). "
+                            f"Reason: {result.get('reason')}\n\n"
+                            f"*** ACTION REQUIRED ***\n"
+                            f"You MUST now output the 'draft_answer' text below as your Final Answer to the user:\n\n"
+                            f"{draft_answer}"
+                        )
+                    else:
+                        return (
+                            f"Verification FAILED (Score: {result.get('score')}). "
+                            f"Reason: {result.get('reason')}\n\n"
+                            f"*** ACTION REQUIRED ***\n"
+                            f"You MUST REVISE your answer to address the failure reason above and try again."
+                        )
+
+                except Exception as e:
+                    tracer.finish_tool(trace_entry, ok=False, error=str(e))
+                    return f"Verification Error: {str(e)}. Proceed with caution."
+
+            # Agent does NOT get check_faithfulness tool - it's a backend-only operation
+            local_tools = tools
+            
+            # Debug: Confirm tools passed to agent
+            tool_names_debug = [getattr(t, "name", str(t)) for t in local_tools]
+            logger.info(_color(f"[DEBUG-TOOLS] Registered tools for agent: {tool_names_debug}", "36"))
+
+            agent = create_deep_agent(
+                tools=local_tools,
+                model=lc_model,
+                system_prompt=system_prompt_value,
+            )
             tracer.set_engine("deepagents")
             final_text: str = ""
-            try:
-                built_msgs = _build_agent_messages(usecase_id, user_message)
-                _log_agent_input(built_msgs, label="astream:values", usecase_id=usecase_id)
-                
-                # Initialize DB tracing callback with turn_id for linking to chat message
-                db_callback = DatabaseTraceCallback(usecase_id=usecase_id, turn_id=turn_id)
-                config = {"callbacks": [db_callback]}
-                
-                async for chunk in agent.astream(
-                    {"messages": built_msgs},
-                    stream_mode="values",
-                    config=config,
-                ):
-                    if isinstance(chunk, dict) and "messages" in chunk:
-                        msgs = chunk["messages"]
-                        if isinstance(msgs, list) and msgs:
-                            last = msgs[-1]
-                            content = None
-                            if isinstance(last, dict):
-                                content = last.get("content")
-                            else:
-                                content = getattr(last, "content", None)
-                            if content:
-                                final_text = str(content)
-                # Removed second updates stream to avoid duplicate tool executions and logs
-            except Exception as e:
-                # If streaming fails, fall back to single invoke
-                built_msgs3 = _build_agent_messages(usecase_id, user_message)
-                _log_agent_input(built_msgs3, label="invoke", usecase_id=usecase_id)
-                
-                # Re-use DB callback with turn_id
-                db_callback = DatabaseTraceCallback(usecase_id=usecase_id, turn_id=turn_id)
-                config = {"callbacks": [db_callback]}
-                
-                result = agent.invoke({"messages": built_msgs3}, config=config)
-                if isinstance(result, dict) and "messages" in result:
-                    msgs = result.get("messages")
-                    if isinstance(msgs, list) and msgs:
-                        last = msgs[-1]
-                        if isinstance(last, dict):
-                            final_text = str(last.get("content", ""))
-                        else:
-                            final_text = str(getattr(last, "content", last))
-                else:
-                    final_text = str(result)
-            if AgentLogConfigs.LOG_AGENT_RAW_OUTPUT:
+            
+            # --- FAITHFULNESS COMPLIANCE LOOP ---
+            # Run agent, then check faithfulness. Retry until faithful or max attempts.
+            max_check_attempts = 3
+            current_msgs = _build_agent_messages(usecase_id, current_message)
+            _log_agent_input(current_msgs, label="faithfulness_loop:init", usecase_id=usecase_id)
+            
+            # Trace step tracker to ensure continuous numbering across retries
+            current_step_offset = 0
+
+            for attempt_idx in range(max_check_attempts):
                 try:
-                    txt = final_text or ""
-                    if len(txt) > AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH:
-                        txt = txt[:AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH] + "... [TRUNCATED]"
-                    logger.info("\033[33m[AGENT RAW OUTPUT]\n%s\033[0m", txt)
-                except Exception:
-                    pass
+                    # Initialize DB tracing callback with continued numbering
+                    db_callback = DatabaseTraceCallback(usecase_id=usecase_id, turn_id=turn_id, initial_step=current_step_offset)
+                    config = {"callbacks": [db_callback]}
+                    
+                    # Track latest messages from this run to preserve context (tool calls, etc.)
+                    latest_run_messages = []
+                    
+                    # Run Agent
+                    async for chunk in agent.astream(
+                        {"messages": current_msgs},
+                        stream_mode="values",
+                        config=config,
+                    ):
+                        if isinstance(chunk, dict) and "messages" in chunk:
+                            msgs = chunk["messages"]
+                            if isinstance(msgs, list) and msgs:
+                                latest_run_messages = msgs
+                                last = msgs[-1]
+                                content = getattr(last, "content", None) or (last.get("content") if isinstance(last, dict) else None)
+                                if content:
+                                    final_text = str(content)
+                    
+                    # Update offset for next attempt if needed
+                    current_step_offset = db_callback.step_counter
+                    
+                    # Update current_msgs to reflect the actual conversation state
+                    if latest_run_messages:
+                        current_msgs = latest_run_messages
+                    
+                    # Log raw output
+                    if AgentLogConfigs.LOG_AGENT_RAW_OUTPUT:
+                        try:
+                            txt = final_text or ""
+                            if len(txt) > AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH:
+                                txt = txt[:AgentLogConfigs.LOG_AGENT_RAW_OUTPUT_MAX_LENGTH] + "..."
+                            logger.info("\033[33m[AGENT RAW OUTPUT (Pass %d)]\n%s\033[0m", attempt_idx+1, txt)
+                        except Exception:
+                            pass
+
+                    # --- BACKEND FAITHFULNESS CHECK ---
+                    # This is done server-side, not by the agent
+                    # Extract clean text (removes signatures, metadata, extras)
+                    clean_response_text = _extract_clean_text_for_faithfulness(final_text)
+                    
+                    # Include the clean agent response in trace input for visibility
+                    faith_input = json.dumps({
+                        "attempt": attempt_idx + 1,
+                        "agent_response": clean_response_text or "(empty response)"
+                    })
+                    faith_trace = tracer.start_tool("faithfulness_check", faith_input)
+                    
+                    # Also log to database for ThinkingStream visibility
+                    current_step_offset += 1
+                    try:
+                        with get_db_context() as faith_db:
+                            from models.agent.trace import AgentTrace
+                            import uuid as uuid_mod
+                            faith_start_trace = AgentTrace(
+                                usecase_id=usecase_id,
+                                turn_id=turn_id,
+                                run_id=uuid_mod.uuid4(),
+                                step_number=current_step_offset,
+                                step_type="tool_start",
+                                content={"input": faith_input, "tool": "faithfulness_check"},
+                                metadata_={"tool_name": "faithfulness_check"},
+                            )
+                            faith_db.add(faith_start_trace)
+                            faith_db.commit()
+                    except Exception as db_err:
+                        logger.warning(f"[DB-TRACE] Failed to log faithfulness start: {db_err}")
+                    
+                    try:
+                        faith_model = _create_model_instance()
+                        
+                        # Build conversation context from recent messages (last 5 exchanges)
+                        context_parts = []
+                        recent_msgs = current_msgs[-10:] if len(current_msgs) > 10 else current_msgs  # Last 10 messages
+                        for msg in recent_msgs[:-1]:  # Exclude the last one (current user message)
+                            role = getattr(msg, "type", None) or msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
+                            content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else str(msg))
+                            if content and isinstance(content, str):
+                                # Clean the content (remove signatures etc)
+                                clean_content = _extract_clean_text_for_faithfulness(content)
+                                if clean_content and len(clean_content) > 10:
+                                    # Truncate long messages
+                                    if len(clean_content) > 500:
+                                        clean_content = clean_content[:500] + "..."
+                                    context_parts.append(f"[{role}]: {clean_content}")
+                        
+                        conversation_context = "\n".join(context_parts) if context_parts else None
+                        
+                        faith_result = faithfulness_agent.evaluate(
+                            current_message, 
+                            clean_response_text, 
+                            llm=faith_model,
+                            context=conversation_context
+                        )
+                        
+                        is_faithful = faith_result.get("is_faithful", False)
+                        score = faith_result.get("score", 0)
+                        reason = faith_result.get("reason", "No reason provided")
+                        
+                        # Log to tracer as text (not JSON)
+                        # Use ok=is_faithful so failed checks show as errors in UI
+                        result_text = f"Score: {score}/100 | Faithful: {is_faithful} | Reason: {reason}"
+                        tracer.finish_tool(faith_trace, ok=is_faithful, result_preview=result_text)
+                        logger.info(_color(f"[FAITHFULNESS] Pass {attempt_idx+1}: {result_text}", "36"))
+                        
+                        # Log tool_end to database
+                        current_step_offset += 1
+                        try:
+                            with get_db_context() as faith_db:
+                                from models.agent.trace import AgentTrace
+                                import uuid as uuid_mod
+                                faith_end_trace = AgentTrace(
+                                    usecase_id=usecase_id,
+                                    turn_id=turn_id,
+                                    run_id=uuid_mod.uuid4(),
+                                    step_number=current_step_offset,
+                                    step_type="tool_end" if is_faithful else "error",
+                                    content={"output": result_text},
+                                    metadata_={"tool_name": "faithfulness_check", "is_faithful": is_faithful, "score": score},
+                                )
+                                faith_db.add(faith_end_trace)
+                                faith_db.commit()
+                        except Exception as db_err:
+                            logger.warning(f"[DB-TRACE] Failed to log faithfulness end: {db_err}")
+                        
+                        if is_faithful:
+                            logger.info(_color(f"[FAITHFULNESS] Response verified as faithful on pass {attempt_idx+1}", "32"))
+                            break
+                        else:
+                            if attempt_idx < max_check_attempts - 1:
+                                logger.warning(_color(f"[FAITHFULNESS] Response NOT faithful on pass {attempt_idx+1}. Forcing revision.", "31"))
+                                
+                                # Append revision request to history
+                                from langchain_core.messages import HumanMessage
+                                revision_msg = HumanMessage(content=f"SYSTEM FEEDBACK: Your response was NOT faithful to the query.\nReason: {reason}\n\nPlease REVISE your answer to address this feedback.")
+                                current_msgs.append(revision_msg)
+                                _log_agent_input([revision_msg], label=f"faithfulness_loop:retry_{attempt_idx+1}", usecase_id=usecase_id)
+                            else:
+                                logger.error(_color(f"[FAITHFULNESS] Response still not faithful after {max_check_attempts} attempts. Returning anyway.", "31"))
+                                
+                    except Exception as faith_err:
+                        tracer.finish_tool(faith_trace, ok=False, error=str(faith_err))
+                        logger.exception(f"[FAITHFULNESS] Check failed: {faith_err}")
+                        # On faithfulness check error, proceed with current response
+                        break
+
+                except Exception as e:
+                    # Fallback on error
+                    logger.exception(f"Error in agent execution pass {attempt_idx}: {e}")
+                    # On catastrophic error, just break and return whatever we have
+                    break
+
             final_text_norm = _normalize_assistant_output(final_text)
             tracer.set_assistant_final(final_text_norm)
             logger.info(_color(f"[AGENT]\n\n{final_text_norm}\n", "32"))
             return final_text_norm
 
-        assistant_text = asyncio.run(_run())
-        
+        # Execution - Single attempt, self-corrected by tool usage
+        assistant_text = asyncio.run(_run(user_message))
+                
         # Debug: Log all tool calls for scenario generation debugging
         try:
             all_tool_calls = tracer.data.get("tool_calls", [])
             tool_names = [tc.get("name") for tc in all_tool_calls]
             logger.info(_color(f"[DEBUG] All tool calls: {tool_names}", "36"))
         except Exception:
+            pass
             pass
         
         # Post-run: if agent invoked start_requirement_generation, emit UI confirmation event
@@ -3680,7 +3913,11 @@ def run_agent_turn(usecase_id, user_message: str, model: str | None = None, turn
         # Also check if agent's response suggests it tried to show test cases
         agent_response_suggests_show_tc = "retrieved the test cases" in assistant_text.lower() or ("test case" in assistant_text.lower() or "testcase" in assistant_text.lower()) and ("display" in assistant_text.lower() or "shown" in assistant_text.lower() or "above" in assistant_text.lower())
         
-        if not show_tc_tool_called and (wants_show_testcases or agent_response_suggests_show_tc):
+        # Check if response already contains a markdown table (heuristics: pipe separators with dashes/colons)
+        # Matches |---| or |:---| or |---:| or |:---:|
+        has_markdown_table = ("|-" in assistant_text or "| :" in assistant_text or "|:" in assistant_text) and ("test case" in assistant_text.lower() or "tc-" in assistant_text.lower())
+
+        if not show_tc_tool_called and (wants_show_testcases or agent_response_suggests_show_tc) and not has_markdown_table:
             logger.info(_color(f"[SHOW-TC-FALLBACK] Tool was not called but user requested to see test cases (user_message='{user_message[:100]}', agent_response_suggests={agent_response_suggests_show_tc}) - checking status", "35"))
             try:
                 status = tool_get_usecase_status(usecase_id)
