@@ -6,12 +6,24 @@ import { apiPost } from "@/lib/utils";
 
 export default function Callback() {
   const navigate = useNavigate();
-  const { isAuthenticated, getAccessTokenSilently, isLoading, user } = useAuth0();
+  const { isAuthenticated, getAccessTokenSilently, isLoading, user, error } = useAuth0();
 
   useEffect(() => {
     const handleCallback = async () => {
 
       if (isLoading) {
+        return;
+      }
+
+      // Handle Auth0 Errors (e.g. Manual Approval Deny)
+      if (error) {
+        console.error("Auth0 Login Error:", error);
+        let message = error.message;
+        if (error.message.includes("Account pending approval")) {
+          message = "Your account is pending administrator approval. Please contact support.";
+        }
+        sessionStorage.setItem("auth0_login_error", message);
+        navigate("/", { replace: true });
         return;
       }
 
