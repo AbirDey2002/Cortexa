@@ -8,7 +8,6 @@ from datetime import datetime, timezone, timedelta
 import os
 import hashlib
 import json
-
 from deps import get_db
 from models.file_processing.file_metadata import FileMetadata
 from models.file_processing.ocr_records import OCRInfo, OCROutputs
@@ -30,41 +29,27 @@ from services.agent.agent_runner import run_agent_turn
 import google.generativeai as genai
 from core.env_config import get_env_variable
 from core.model_registry import is_valid_model, get_default_model
-from core.auth import verify_token
+from deps import get_db, get_current_user
 from typing import Dict, Any
-
-
-
 def hash_password(password: str) -> str:
     """Securely hash a password using SHA-256. In production, use bcrypt or similar."""
     return hashlib.sha256(password.encode()).hexdigest()
-
-
 router = APIRouter()
-
 # Create a separate router for frontend-specific endpoints
 frontend_router = APIRouter()
-
-
 class ChatMessage(BaseModel):
     role: str
     content: str
     files: list[dict] | None = None  # Optional file information
     model: str | None = None  # Optional model selection
-
-
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
 # In-memory streaming buffers for Gemini
 gemini_streaming_responses: dict[str, str] = {}
 gemini_response_chunks: dict[str, list[str]] = {}
-
 GEMINI_API_KEY = get_env_variable("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-
-
 def _get_usecase_documents_markdown(db: Session, usecase_id: uuid.UUID) -> tuple[list[dict], str]:
     """Build list of files with markdown and a combined markdown string from DB (no HTTP)."""
     files = db.query(FileMetadata).filter(
@@ -88,7 +73,6 @@ def _get_usecase_documents_markdown(db: Session, usecase_id: uuid.UUID) -> tuple
             combined_parts.append(f"## {f.file_name}\n\n{md}\n")
     combined_markdown = "\n".join(combined_parts).strip()
     return result_files, combined_markdown
-
 async def _generate_gemini_streaming_response(usecase_id: str, response_text: str):
     # Clear any previous chunks
     gemini_response_chunks[usecase_id] = []
@@ -99,7 +83,6 @@ async def _generate_gemini_streaming_response(usecase_id: str, response_text: st
         if usecase_id in gemini_response_chunks:
             gemini_response_chunks[usecase_id].append(chunk)
         yield chunk
-
 def _parse_gemini_output(raw_output: str) -> str:
     """Extract user_answer string from Gemini agent output using robust parsing."""
     try:
@@ -126,8 +109,6 @@ def _parse_gemini_output(raw_output: str) -> str:
         except Exception:
             pass
         return raw_output[:10000]  # Return raw output as fallback
-
-
 def _check_for_tool_call_gemini(raw_output: str) -> tuple[bool, str, dict]:
     """
     Check if the Gemini agent output contains a tool call.
@@ -149,8 +130,6 @@ def _check_for_tool_call_gemini(raw_output: str) -> tuple[bool, str, dict]:
     except Exception:
         pass
     return False, "", {}
-
-
 def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, model: str | None = None, timeout_seconds: int = 300, turn_id: uuid.UUID | None = None):
     """
     Enhanced Gemini chat inference with automatic history management and summarization.
@@ -213,7 +192,6 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                         model_name=selected_model
                     )
                 )
-
                 # Delegate to deep agent for orchestration (pass turn_id for trace linking)
                 assistant_text, traces = run_agent_turn(usecase_id, user_message, model=selected_model, turn_id=turn_id)
                 gemini_streaming_responses[str(usecase_id)] = assistant_text
@@ -225,7 +203,6 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                     logger.info(f"[TRACES-DEBUG] Traces received: tool_calls_count={tool_calls_count}, tool_names={tool_names}")
                 except Exception as e:
                     logger.warning(f"[TRACES-DEBUG] Error logging traces: {e}")
-
                 # First pass logging
                 try:
                     logger.info(
@@ -241,12 +218,9 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                         logger.info("Chatbot response (snippet):\n%s", snippet if snippet else "[EMPTY]")
                 except Exception:
                     pass
-
                 # All tool orchestration handled inside deep agent runner
-
                 # PDF markers are now created during file upload, not here
                 # This ensures correct ordering: User message → PDF marker → Agent response
-
                 # Persist full record (system text + structured traces + turn_id for linking)
                 system_entry = {"system": assistant_text, "timestamp": _utc_now_iso(), "traces": traces, "turn_id": str(turn_id) if turn_id else None}
                 
@@ -329,9 +303,7 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                 
                 record.chat_history = final_history
                 record.chat_summary = updated_summary
-
                 db.commit()
-
                 logger.info(
                     "Database updated for usecase_id=%s. History messages: %d, Summary length: %d",
                     usecase_id,
@@ -390,14 +362,12 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                 except Exception as e:
                     logger.error(f"Error in Stage 1 naming for usecase {usecase_id}: {e}", exc_info=True)
                     # Don't fail the chat if naming fails
-
             except Exception as e:
                 logger.exception(f"Enhanced Gemini API call failed for usecase_id={usecase_id}: {e}")
                 history = record.chat_history or []
                 err_entry = {"system": f"Error: {e}", "timestamp": _utc_now_iso()}
                 record.chat_history = [err_entry] + history
                 db.commit()
-
             record.status = "Completed"
             logger.info("Completed enhanced Gemini chat inference for usecase_id=%s", usecase_id)
         
@@ -414,21 +384,23 @@ def _run_gemini_chat_inference_sync(usecase_id: uuid.UUID, user_message: str, mo
                 record.chat_history = [err_entry] + history
                 record.status = "Completed"
                 db.commit()
-
-
 @router.post("/{usecase_id}/gemini-chat")
 async def append_gemini_chat_message(
     usecase_id: uuid.UUID,
     payload: ChatMessage,
     background_tasks: BackgroundTasks,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     New endpoint for Gemini-powered chat conversations.
     This runs alongside the existing PF-powered chat endpoint.
     """
-    record = db.query(UsecaseMetadata).filter(UsecaseMetadata.usecase_id == usecase_id, UsecaseMetadata.is_deleted == False).first()
+    record = db.query(UsecaseMetadata).filter(
+        UsecaseMetadata.usecase_id == usecase_id,
+        UsecaseMetadata.user_id == user.id,
+        UsecaseMetadata.is_deleted == False,
+    ).first()
     if not record:
         raise HTTPException(status_code=404, detail="Usecase not found")
     
@@ -447,14 +419,12 @@ async def append_gemini_chat_message(
     record.chat_history = history
     record.status = "In Progress"
     db.commit()
-
     # Handle uploaded files: ensure FileMetadata rows and store extracted PDF text
     try:
         if payload.files:
             # Resolve user_id from usecase record
             user_id = record.user_id
             usecase_uuid = record.usecase_id
-
             resolved_files: list[FileMetadata] = []
             for f in payload.files:
                 file_name = str(f.get("name") or "").strip()
@@ -478,7 +448,6 @@ async def append_gemini_chat_message(
                     db.add(fm)
                     db.flush()  # get file_id
                 resolved_files.append(fm)
-
             # For each resolved file, extract text and upsert OCR rows (idempotent)
             for fm in resolved_files:
                 # Download/read file bytes
@@ -498,7 +467,6 @@ async def append_gemini_chat_message(
                 if md_text and not any(sym in md_text for sym in ("# ", "- ", "1. ")):
                     # Wrap in a paragraph to make it explicit markdown content
                     md_text = md_text.replace("\n\n", "\n\n\n").strip()
-
                 # Logging of extracted text (controlled by config to avoid sensitive exposure)
                 logger = logging.getLogger(__name__)
                 logger.info(
@@ -528,7 +496,6 @@ async def append_gemini_chat_message(
                     info.total_pages = 1
                     info.completed_pages = 1
                     info.error_pages = 0
-
                 # Upsert OCROutputs for page 1
                 output = db.query(OCROutputs).filter(
                     OCROutputs.file_id == fm.file_id,
@@ -546,7 +513,6 @@ async def append_gemini_chat_message(
                     output.page_text = md_text or ""
                     output.error_msg = None
                     output.is_completed = True
-
             db.commit()
     except Exception as e:
         # Do not fail chat append if file processing fails
@@ -558,12 +524,10 @@ async def append_gemini_chat_message(
     # Fire background inference with Gemini (include turn_id for trace linking)
     background_tasks.add_task(_run_gemini_chat_inference_sync, usecase_id, payload.content, payload.model, 300, turn_id)
     return {"status": "accepted", "usecase_id": str(usecase_id), "turn_id": str(turn_id), "provider": "gemini"}
-
-
 @router.get("/{usecase_id}/gemini-chat")
 def get_gemini_chat_history(
     usecase_id: uuid.UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get chat history for Gemini conversations (same as regular chat history)."""
@@ -573,10 +537,10 @@ def get_gemini_chat_history(
         query = text("""
             SELECT chat_history
             FROM usecase_metadata
-            WHERE usecase_id = :usecase_id AND is_deleted = false
+            WHERE usecase_id = :usecase_id AND user_id = :user_id AND is_deleted = false
         """)
         
-        result = db.execute(query, {"usecase_id": usecase_id}).fetchone()
+        result = db.execute(query, {"usecase_id": usecase_id, "user_id": user.id}).fetchone()
         if not result:
             return []
             
@@ -584,30 +548,24 @@ def get_gemini_chat_history(
     except Exception as e:
         logging.error(f"Error in get_gemini_chat_history: {e}")
         return []
-
-
 @frontend_router.get("/{usecase_id}/gemini-chat")
 def get_gemini_chat_history_frontend(
     usecase_id: uuid.UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Frontend-specific endpoint to get Gemini chat history without ORM issues."""
     return get_gemini_chat_history(usecase_id, db)
-
-
 @router.get("/{usecase_id}/gemini-chat/stream")
 async def stream_gemini_chat(
     usecase_id: uuid.UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token)
+    user: User = Depends(get_current_user)
 ):
     """Stream the latest Gemini response as it is generated."""
     uid = str(usecase_id)
     # If no response yet, stream empty generator until available
     text = gemini_streaming_responses.get(uid, "")
     return StreamingResponse(_generate_gemini_streaming_response(uid, text), media_type="text/plain")
-
-
 # Health check endpoint for Gemini service
 @router.get("/gemini/health")
 def gemini_health_check():
@@ -632,19 +590,20 @@ def gemini_health_check():
         "configured": True,
         "api_key": masked_key
     }
-
-
 # New endpoints for history management monitoring
 @router.get("/{usecase_id}/gemini-chat/statistics")
 def get_chat_statistics(
     usecase_id: uuid.UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get detailed statistics about chat history and token usage."""
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id, 
+            UsecaseMetadata.user_id == user.id,
+
+            UsecaseMetadata.user_id == user.id,
             UsecaseMetadata.is_deleted == False
         ).first()
         
@@ -667,18 +626,19 @@ def get_chat_statistics(
     except Exception as e:
         logging.error(f"Error getting chat statistics for usecase {usecase_id}: {e}")
         raise HTTPException(status_code=500, detail="Error retrieving statistics")
-
-
 @router.get("/{usecase_id}/gemini-chat/summarization-status")
 def get_summarization_status(
     usecase_id: uuid.UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Check if chat history needs summarization."""
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id, 
+            UsecaseMetadata.user_id == user.id,
+
+            UsecaseMetadata.user_id == user.id,
             UsecaseMetadata.is_deleted == False
         ).first()
         
@@ -703,18 +663,19 @@ def get_summarization_status(
     except Exception as e:
         logging.error(f"Error checking summarization status for usecase {usecase_id}: {e}")
         raise HTTPException(status_code=500, detail="Error checking summarization status")
-
-
 @router.post("/{usecase_id}/gemini-chat/force-summarization")
 async def force_summarization(
     usecase_id: uuid.UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Force summarization of chat history (for testing/maintenance)."""
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id, 
+            UsecaseMetadata.user_id == user.id,
+
+            UsecaseMetadata.user_id == user.id,
             UsecaseMetadata.is_deleted == False
         ).first()
         

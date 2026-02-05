@@ -14,7 +14,8 @@ from services.scenarios.scenarios_service import (
 from models.generator.requirement import Requirement
 from models.generator.scenario import Scenario
 from db.session import get_db_context
-from core.auth import verify_token
+from deps import get_db, get_current_user
+from models.user.user import User
 from typing import Dict, Any
 
 
@@ -35,6 +36,7 @@ def _run_scenarios_generation(usecase_id: UUID):
         with get_db_context() as db:
             record = db.query(UsecaseMetadata).filter(
                 UsecaseMetadata.usecase_id == usecase_id,
+                
                 UsecaseMetadata.is_deleted == False,
             ).first()
             if not record:
@@ -147,6 +149,7 @@ def _run_scenarios_generation(usecase_id: UUID):
             with get_db_context() as db:
                 record = db.query(UsecaseMetadata).filter(
                     UsecaseMetadata.usecase_id == usecase_id,
+                    
                     UsecaseMetadata.is_deleted == False,
                 ).first()
                 if record:
@@ -168,12 +171,14 @@ def _run_scenarios_generation(usecase_id: UUID):
 def generate_scenarios(
     usecase_id: UUID,
     background_tasks: BackgroundTasks,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -211,12 +216,14 @@ def generate_scenarios(
 @router.get("/{usecase_id}/status")
 def scenarios_status(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -255,7 +262,7 @@ def scenarios_status(
 @router.get("/{usecase_id}/list")
 def list_scenarios(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -265,6 +272,8 @@ def list_scenarios(
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -320,7 +329,7 @@ def list_scenarios(
 @router.get("/{usecase_id}/list-flat")
 def list_scenarios_flat(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -331,6 +340,8 @@ def list_scenarios_flat(
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -387,7 +398,7 @@ def list_scenarios_flat(
 def read_scenario(
     usecase_id: UUID,
     display_id: int,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -398,6 +409,8 @@ def read_scenario(
         # Verify usecase exists
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:

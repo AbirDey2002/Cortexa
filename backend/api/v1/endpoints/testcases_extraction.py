@@ -16,7 +16,8 @@ from models.generator.requirement import Requirement
 from models.generator.scenario import Scenario
 from models.generator.test_case import TestCase
 from db.session import get_db_context
-from core.auth import verify_token
+from deps import get_db, get_current_user
+from models.user.user import User
 from typing import Dict, Any
 
 
@@ -38,6 +39,7 @@ def _run_testcases_generation(usecase_id: UUID):
         with get_db_context() as db:
             record = db.query(UsecaseMetadata).filter(
                 UsecaseMetadata.usecase_id == usecase_id,
+                
                 UsecaseMetadata.is_deleted == False,
             ).first()
             if not record:
@@ -171,6 +173,7 @@ def _run_testcases_generation(usecase_id: UUID):
             with get_db_context() as db:
                 record = db.query(UsecaseMetadata).filter(
                     UsecaseMetadata.usecase_id == usecase_id,
+                    
                     UsecaseMetadata.is_deleted == False,
                 ).first()
                 if record:
@@ -192,13 +195,15 @@ def _run_testcases_generation(usecase_id: UUID):
 def generate_testcases(
     usecase_id: UUID,
     background_tasks: BackgroundTasks,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Start test case generation for a usecase."""
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -236,13 +241,15 @@ def generate_testcases(
 @router.get("/{usecase_id}/status")
 def testcases_status(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get test case generation status."""
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -281,7 +288,7 @@ def testcases_status(
 @router.get("/{usecase_id}/list")
 def list_testcases(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -291,6 +298,8 @@ def list_testcases(
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -359,7 +368,7 @@ def list_testcases(
 def read_testcase(
     usecase_id: UUID,
     display_id: int,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -370,6 +379,8 @@ def read_testcase(
         # Verify usecase exists
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:

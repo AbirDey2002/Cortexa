@@ -1,7 +1,8 @@
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError, jwk
-from jose.utils import base64url_decode
+import jwt
+from jwt import PyJWKClient, PyJWTError
+from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
 import requests
 import logging
 from typing import Dict, Any
@@ -10,8 +11,8 @@ from core.env_config import get_auth0_config
 logger = logging.getLogger(__name__)
 security = HTTPBearer()
 
-# Cache for JWKS
-_jwks_cache: Dict[str, Any] = {}
+# Cache for JWKS client
+_jwks_client: PyJWKClient = None
 _jwks_url: str = ""
 
 
@@ -20,26 +21,24 @@ def get_jwks_url(domain: str) -> str:
     return f"https://{domain}/.well-known/jwks.json"
 
 
-def get_jwks(domain: str) -> Dict[str, Any]:
-    """Fetch and cache JWKS from Auth0."""
-    global _jwks_cache, _jwks_url
+def get_jwks_client(domain: str) -> PyJWKClient:
+    """Get or create cached JWKS client for Auth0."""
+    global _jwks_client, _jwks_url
     
     jwks_url = get_jwks_url(domain)
     
-    # Return cached JWKS if available and URL matches
-    if _jwks_url == jwks_url and _jwks_cache:
-        return _jwks_cache
+    # Return cached client if available and URL matches
+    if _jwks_url == jwks_url and _jwks_client:
+        return _jwks_client
     
     try:
-        response = requests.get(jwks_url, timeout=10)
-        response.raise_for_status()
-        _jwks_cache = response.json()
+        _jwks_client = PyJWKClient(jwks_url)
         _jwks_url = jwks_url
-        return _jwks_cache
+        return _jwks_client
     except Exception as e:
         raise HTTPException(
             status_code=503,
-            detail=f"Failed to fetch JWKS: {str(e)}"
+            detail=f"Failed to initialize JWKS client: {str(e)}"
         )
 
 
@@ -78,47 +77,30 @@ def verify_token(
         )
     
     try:
-        # Get JWKS
-        jwks = get_jwks(domain)
+        # Get JWKS client
+        jwks_client = get_jwks_client(domain)
         
-        # Get unverified header to find the key ID
-        unverified_header = jwt.get_unverified_header(token)
-        kid = unverified_header.get("kid")
+        # Get signing key from JWKS
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
         
-        if not kid:
-            raise HTTPException(
-                status_code=401,
-                detail="Token missing 'kid' in header"
-            )
-        
-        # Find the key with matching kid
-        rsa_key = None
-        for key in jwks.get("keys", []):
-            if key.get("kid") == kid:
-                rsa_key = key
-                break
-        
-        if not rsa_key:
-            raise HTTPException(
-                status_code=401,
-                detail=f"Unable to find key with kid: {kid}"
-            )
-        
-        # Convert JWK to RSA key
-        public_key = jwk.construct(rsa_key)
-        
-        # Verify and decode token
+        # Verify and decode token with explicit algorithm restriction (security best practice)
         payload = jwt.decode(
             token,
-            public_key,
-            algorithms=["RS256"],
+            signing_key.key,
+            algorithms=["RS256"],  # Explicitly allow only RS256 to prevent algorithm confusion attacks
             audience=audience,
             issuer=f"https://{domain}/"
         )
         
         return payload
         
-    except JWTError as e:
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=401,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except InvalidTokenError as e:
         raise HTTPException(
             status_code=401,
             detail=f"Invalid token: {str(e)}",

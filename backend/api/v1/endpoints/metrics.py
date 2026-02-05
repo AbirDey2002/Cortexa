@@ -6,7 +6,7 @@ import logging
 from typing import List, Dict, Any
 
 from deps import get_db
-from core.auth import verify_token
+from deps import get_db, get_current_user
 from models.user.user import User
 from models.usecase.usecase import UsecaseMetadata
 from models.generator.requirement import Requirement
@@ -23,22 +23,13 @@ SIZE_TS_KB = 5
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-def _get_user_from_token(db: Session, token_payload: Dict[str, Any]) -> User:
-    email = token_payload.get("email") or token_payload.get("sub")
-    if not email:
-        raise HTTPException(status_code=401, detail="Could not identify user")
-    user = db.query(User).filter(User.email == email, User.is_deleted == False).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
-
 @router.get("/")
 def get_user_metrics(
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     try:
-        user = _get_user_from_token(db, token_payload)
+        
         user_id = user.id
 
         # 1. Get all usecase IDs for this user

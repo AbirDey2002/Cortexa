@@ -16,7 +16,8 @@ from services.requirements.requirements_service import (
 )
 from models.generator.requirement import Requirement
 from db.session import get_db_context
-from core.auth import verify_token
+from deps import get_db, get_current_user
+from models.user.user import User
 from typing import Dict, Any
 
 
@@ -138,12 +139,13 @@ def _run_requirements_generation(usecase_id: UUID):
 def generate_requirements(
     usecase_id: UUID,
     background_tasks: BackgroundTasks,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -171,7 +173,7 @@ def generate_requirements(
 @router.get("/{usecase_id}/list")
 def list_requirements(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -181,6 +183,7 @@ def list_requirements(
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -222,7 +225,7 @@ def list_requirements(
 def read_requirement(
     usecase_id: UUID,
     display_id: int,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -230,9 +233,11 @@ def read_requirement(
     Returns requirement_json as formatted text (similar to OCR combined_markdown).
     """
     try:
-        # Verify usecase exists
+        # Verify usecase exists and belongs to user
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            UsecaseMetadata.user_id == user.id,
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:
@@ -337,12 +342,13 @@ def read_requirement(
 @router.get("/{usecase_id}/status")
 def requirements_status(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     try:
         record = db.query(UsecaseMetadata).filter(
             UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
             UsecaseMetadata.is_deleted == False,
         ).first()
         if not record:

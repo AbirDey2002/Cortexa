@@ -10,11 +10,12 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from core.auth import verify_token
+from deps import get_db, get_current_user
 from db.session import get_db_context
 from deps import get_db
 from models.agent.trace import AgentTrace
 from models.usecase.usecase import UsecaseMetadata
+from models.user.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ async def _stream_traces(usecase_id: uuid.UUID, last_step: int = 0):
 async def stream_agent_thinking(
     usecase_id: uuid.UUID,
     last_step: int = Query(0, description="Last step number received (cursor)"),
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
 ):
     """
     SSE endpoint to stream agent thinking steps in real-time.
@@ -139,6 +140,16 @@ async def stream_agent_thinking(
     - `error`: An error occurred
     - `timeout`: No activity for too long
     """
+    # Verify ownership before streaming
+    with get_db_context() as db:
+        record = db.query(UsecaseMetadata).filter(
+            UsecaseMetadata.usecase_id == usecase_id,
+            UsecaseMetadata.user_id == user.id,
+            UsecaseMetadata.is_deleted == False
+        ).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Usecase not found or access denied")
+
     return StreamingResponse(
         _stream_traces(usecase_id, last_step),
         media_type="text/event-stream",
@@ -155,14 +166,21 @@ def get_agent_thinking_history(
     usecase_id: uuid.UUID,
     turn_id: uuid.UUID = Query(None, description="Filter by turn ID"),
     limit: int = Query(50, description="Max traces to return"),
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Get recent agent thinking history for a usecase.
     Optionally filter by turn_id to get traces for a specific chat message.
     """
-    query = db.query(AgentTrace).filter(AgentTrace.usecase_id == usecase_id)
+    # Verify ownership
+    query = db.query(AgentTrace).join(
+        UsecaseMetadata, AgentTrace.usecase_id == UsecaseMetadata.usecase_id
+    ).filter(
+        AgentTrace.usecase_id == usecase_id,
+        UsecaseMetadata.user_id == user.id,
+        UsecaseMetadata.is_deleted == False
+    )
     
     # Filter by turn_id if provided
     if turn_id:

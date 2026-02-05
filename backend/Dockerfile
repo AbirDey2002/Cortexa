@@ -4,23 +4,32 @@ FROM python:3.11-slim
 # working dir
 WORKDIR /app
 
-# copy requirements
-COPY requirements.txt .
+# Copy requirements
+# We prefer using requirements.lock if it exists for repeatable builds
+COPY requirements.txt requirements.lock* ./
 
-# default to docker mode
+# Default to docker mode
 ENV RUN_MODE=docker
 
 # Install dependencies
-# --no-cache-dir reduces image size by removing temporarily download files
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    if [ -f requirements.lock ]; then \
+        pip install --no-cache-dir -r requirements.lock; \
+    else \
+        pip install --no-cache-dir -r requirements.txt; \
+    fi
 
-# Copy the appliction code
-COPY . .
+# Create non-root user for security
+RUN useradd -m appuser && chown -R appuser:appuser /app
+
+# Copy the application code
+COPY --chown=appuser:appuser . .
+
+# Switch to non-root user
+USER appuser
 
 # Expose the port
 EXPOSE 8000
 
-# start the application
-# we use "0.0.0.0" to ensure it is accessible from outside the container
-CMD ["uvicorn","main:app","--host","0.0.0.0","--port","8000"]
+# Start the application
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

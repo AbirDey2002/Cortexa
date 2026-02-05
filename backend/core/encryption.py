@@ -38,7 +38,7 @@ def get_fernet() -> Fernet:
                 "This is NOT secure for production. Set ENCRYPTION_KEY in .env"
             )
             key = Fernet.generate_key().decode()
-            logger.info(f"Generated temporary ENCRYPTION_KEY: {key}")
+            logger.info("Generated temporary ENCRYPTION_KEY for development.")
         
         try:
             _fernet_instance = Fernet(key.encode() if isinstance(key, str) else key)

@@ -10,6 +10,8 @@ import requests
 from pypdf import PdfReader
 import pdfplumber
 
+from core.security import validate_url_for_ssrf, SecurityException
+
 
 logger = logging.getLogger(__name__)
 
@@ -40,17 +42,25 @@ def download_file_to_bytes(url: str) -> bytes:
                     logger.info("download_file_to_bytes: local bytes=%d", len(data))
                     return data
             logger.warning("download_file_to_bytes: no local file found for %s (checked %s)", filename, ", ".join(str(c) for c in candidates))
-            # If it was an http URL to uploads and local not found, only then consider http fetch
-            # Avoid self-fetch deadlocks for local hosts
-            parsed = urlparse(url)
-            host = (parsed.hostname or "").lower()
-            if host in {"0.0.0.0", "127.0.0.1", "localhost"}:
-                logger.warning("download_file_to_bytes: skipping HTTP fetch for local host=%s to avoid timeout; returning empty", host)
+            # Validate URL for SSRF before any HTTP fetch or host-based logic
+            try:
+                validate_url_for_ssrf(url)
+            except SecurityException as se:
+                logger.warning(f"download_file_to_bytes: blocking SSRF attempt: {se}")
                 return b""
-            # else fall through to http fetch below
+
+            # If it was an http URL to uploads and local not found, only then consider http fetch
+            # Else fall through to http fetch below
 
         # HTTP(S) fetch for non-uploads or when local mapping not applicable
         if url.startswith("http://") or url.startswith("https://"):
+            # Final SSRF validation check for non-uploads path
+            try:
+                validate_url_for_ssrf(url)
+            except SecurityException as se:
+                logger.warning(f"download_file_to_bytes: blocking SSRF attempt: {se}")
+                return b""
+
             # Shorter timeout for potentially slow sources; callers handle empty result
             timeout = 15
             try:

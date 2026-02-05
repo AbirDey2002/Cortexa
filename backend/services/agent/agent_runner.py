@@ -290,6 +290,11 @@ def _build_agent_messages(usecase_id: Any, user_message: str) -> List[Dict[str, 
 
 
 def _normalize_assistant_output(raw: Any) -> str:
+    # DEBUG LOG for full transparency
+    if isinstance(raw, str):
+        preview = raw[:100] + "..." if len(raw) > 100 else raw
+        logger.info(f"[DEBUG-NORM] Raw input length={len(raw)} | Preview: {preview}")
+    
     try:
         if isinstance(raw, list):
             # Join chunk texts
@@ -303,8 +308,11 @@ def _normalize_assistant_output(raw: Any) -> str:
             if joined:
                 return joined
             return str(raw)
+            
         s = raw if isinstance(raw, str) else str(raw)
         s = s.strip()
+        original_s = s
+        
         # Extract JSON user_answer
         try:
             import re as _re
@@ -316,7 +324,8 @@ def _normalize_assistant_output(raw: Any) -> str:
                 return str(data.get("user_answer") or "")
         except Exception:
             pass
-        # Extract from stringified chunk list
+            
+        # Extract from stringified chunk list (fallback for weird formats)
         try:
             import re as _re2
             texts: List[str] = []
@@ -325,9 +334,15 @@ def _normalize_assistant_output(raw: Any) -> str:
                 if val:
                     texts.append(val)
             if texts:
-                return "\n\n".join(texts).strip()
+                candidate = "\n\n".join(texts).strip()
+                # SAFETY CHECK: If candidate is suspiciously short and original was long, reject it
+                if len(candidate) < 5 and len(original_s) > 20:
+                    logger.warning(f"[DEBUG-NORM] Rejected regex extraction '{candidate}' because it's too short compared to input.")
+                    return original_s
+                return candidate
         except Exception:
             pass
+            
         return s
     except Exception:
         return str(raw)

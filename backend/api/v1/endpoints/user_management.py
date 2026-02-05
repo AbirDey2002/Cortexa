@@ -8,9 +8,8 @@ import requests
 from typing import Dict, Any
 from datetime import datetime
 
-from deps import get_db
+from deps import get_db, get_current_user
 from models.user.user import User
-from core.auth import verify_token
 from core.env_config import get_auth0_config
 
 # Import additional models for cascading delete
@@ -53,20 +52,31 @@ class UserSyncResponse(BaseModel):
 
 
 @router.get("/{user_id}", response_model=UserResponse)
-def get_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
-    if not user:
-        raise HTTPException(status_code=44, detail="User not found")
+def get_user(
+    user_id: uuid.UUID, 
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if user.id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # User is already fetched by get_current_user, but we can double check is_deleted
+    if user.is_deleted:
+        raise HTTPException(status_code=404, detail="User not found")
     
     response = UserResponse.model_validate(user)
     return response
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
-def update_user(user_id: uuid.UUID, payload: UserUpdate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+def update_user(
+    user_id: uuid.UUID, 
+    payload: UserUpdate, 
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if user.id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     if payload.email is not None:
         user.email = payload.email
     if payload.name is not None:
@@ -82,14 +92,18 @@ def update_user(user_id: uuid.UUID, payload: UserUpdate, db: Session = Depends(g
 
 
 @router.delete("/{user_id}/data")
-def delete_user_data(user_id: uuid.UUID, db: Session = Depends(get_db)):
+def delete_user_data(
+    user_id: uuid.UUID, 
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if user.id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     """
     Delete all data associated with the user (Usecases, Requirements, Scenarios, etc.)
     but keep the user account.
     """
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    # User is already verified via dependency
         
     try:
         # Get all usecase IDs for this user
@@ -233,7 +247,13 @@ def _get_users_by_email_from_auth0(domain: str, m2m_token: str, email: str) -> l
 
 
 @router.delete("/{user_id}")
-def delete_account(user_id: uuid.UUID, db: Session = Depends(get_db)):
+def delete_account(
+    user_id: uuid.UUID, 
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if user.id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     """
     Delete user account and all associated data.
     """
@@ -250,12 +270,8 @@ def delete_account(user_id: uuid.UUID, db: Session = Depends(get_db)):
          # delete_user_data commits.
          raise HTTPException(status_code=500, detail=f"Failed to delete user data: {str(e)}")
     
-    # 2. Get user to delete
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        # Might have been deleted conceptually?
-        # If user is gone, we are good.
-        return {"status": "success", "message": "Account already deleted"}
+    # 2. Re-fetch user if needed, or just use the dependency which is already attached
+    # However, delete_user_data might have cleared some things, but user record should still be there.
         
     # 3. Delete from Auth0 (Best Effort)
     try:
@@ -337,65 +353,19 @@ def _resolve_auth0_email(sub: str) -> str:
 
 @router.post("/sync", response_model=UserSyncResponse)
 def sync_user(
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Sync Auth0 user to database for SIGNUP flow.
-    Creates user if doesn't exist, updates if exists.
+    User is already created/resolved by get_current_user dependency.
     """
-    # Extract user info from JWT token
-    # Prefer email, but if not available, use sub (Auth0 user ID) as email
-    email = token_payload.get("email")
-    if not email and token_payload.get("sub"):
-        email = _resolve_auth0_email(token_payload.get("sub"))
-    
-    name = token_payload.get("name") or token_payload.get("nickname")
-    name = token_payload.get("name") or token_payload.get("nickname")
-    
-    if not email:
-        raise HTTPException(
-            status_code=400,
-            detail="Email or sub not found in token"
-        )
-    
-    # Check if user exists
-    user = db.query(User).filter(User.email == email, User.is_deleted == False).first()
-    
-    if user:
-        # Update existing user
-        if name:
-            user.name = name
-        db.commit()
-        db.refresh(user)
-    else:
-        # Check if email already exists (case-insensitive check for safety)
-        existing_email = db.query(User).filter(
-            func.lower(User.email) == email.lower(),
-            User.is_deleted == False
-        ).first()
-        
-        if existing_email:
-            raise HTTPException(
-                status_code=400,
-                detail="An account with this email already exists. Please sign in instead."
-            )
-        
-        # Create new user
-        user = User(
-            email=email,
-            name=name
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    
-    response = UserSyncResponse(
+    # get_current_user already creates the user if they don't exist
+    # This endpoint just confirms success and returns the user info
+    return UserSyncResponse(
         user_id=str(user.id),
         email=user.email,
         name=user.name
     )
-    
-    return response
 
 

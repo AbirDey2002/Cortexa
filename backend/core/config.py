@@ -41,6 +41,25 @@ class OCRServiceConfigs:
     OCR_TEXT_LOG_MAX_LENGTH = int(os.getenv("OCR_TEXT_LOG_MAX_LENGTH", "200"))  # Limit logged text length
 
 
+class FileProcessingConfigs:
+    """Security: File upload limits and allowed types"""
+    # Max file size in bytes (default: 50MB)
+    MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(50 * 1024 * 1024)))
+    
+    # Allowed file extensions
+    ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md"}
+    
+    # Allowed MIME types
+    ALLOWED_MIME_TYPES = {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "text/plain",
+        "text/markdown"
+    }
+
+
 class AgentLogConfigs:
     # Toggle logging of agent system prompts and raw outputs (ANSI yellow)
     LOG_AGENT_SYSTEM_PROMPT = os.getenv("LOG_AGENT_SYSTEM_PROMPT", "false").lower() == "true"

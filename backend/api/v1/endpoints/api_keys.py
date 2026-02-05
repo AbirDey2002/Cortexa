@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from db.session import get_db
+from deps import get_db, get_current_user
 from models.user.user import User
 from models.user.api_key import UserAPIKey
 from core.encryption import encrypt_api_key, get_key_display_suffix
@@ -20,7 +20,6 @@ from core.provider_registry import (
     is_valid_provider,
     ProviderType,
 )
-from api.v1.endpoints.usecase_management import verify_token, _get_user_from_token
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +88,7 @@ class AvailableModelsResponse(BaseModel):
 
 # ============== Helper Functions ==============
 
-async def get_current_user(
-    token_payload: dict = Depends(verify_token),
-    db: Session = Depends(get_db)
-) -> User:
-    """Get the current authenticated user."""
-    return _get_user_from_token(db, token_payload)
+# Helper deleted
 
 
 # ============== API Endpoints ==============

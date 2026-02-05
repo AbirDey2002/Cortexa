@@ -8,6 +8,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import os
 import logging
+import jwt
 
 logger = logging.getLogger(__name__)
 
@@ -16,14 +17,30 @@ def get_rate_limit_key(request):
     """
     Get the key for rate limiting.
     
-    For authenticated requests, use user ID from token.
-    For unauthenticated requests, use IP address.
+    1. Try to get user ID from request state (set by dependencies).
+    2. If not set, try to extract sub/email from JWT token without verification.
+    3. Fall back to IP address.
     """
-    # Try to get user from token if available
+    # 1. Try request state (set by get_current_user dependency)
     if hasattr(request.state, "user_id"):
         return f"user:{request.state.user_id}"
     
-    # Fall back to IP address
+    # 2. Try to extract from Authorization header proactively
+    # This is for the middleware phase where dependencies haven't run yet.
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            token = auth_header[7:]
+            # Safe decode without verification just to get identifier
+            # Real verification happens in the endpoint dependencies
+            payload = jwt.decode(token, options={"verify_signature": False})
+            uid = payload.get("sub") or payload.get("email")
+            if uid:
+                return f"user:{uid}"
+        except Exception:
+            pass
+    
+    # 3. Fall back to IP address
     return get_remote_address(request)
 
 

@@ -67,6 +67,23 @@ AWS_SESSION_TOKEN=your_aws_session_token
 - Added security-aware logging with conditional text exposure
 - Logger propagation disabled to prevent uncontrolled log distribution
 
+### 5. Broken Object Level Authorization (BOLA)
+
+**Problem**: Users could potentially access resources (usecases, files, scenarios) belonging to other users by manipulating UUIDs in API requests.
+
+**Solution**:
+- Implemented strict ownership checks in the database query layer.
+- Every resource-accessing endpoint verifies that `resource.user_id == current_user.id`.
+- Centralized user resolution in a robust `get_current_user` dependency.
+
+### 6. Authentication & Hardening
+
+**Measures**:
+- **Centralized Dependency**: All routes use `Depends(get_current_user)` for consistent identity resolution.
+- **Removed Legacy Routes**: Eliminated unauthenticated `/test/` routes that could lead to data leaks.
+- **Token-Aware Rate Limiting**: The rate limiter now identifies users by their JWT token identifier, preventing IP-based spoofing of rate limits.
+- **Request State Persistence**: `user_id` is propagated to `request.state` for cross-cutting middleware access.
+
 ## 🚨 Security Recommendations
 
 ### For Production Deployment

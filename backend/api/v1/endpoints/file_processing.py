@@ -2,7 +2,7 @@ import os
 import asyncio
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
-from services.file_processing.file_service import upload_file_to_blob
+from services.file_processing.file_service import upload_file_to_blob, sanitize_filename
 from services.file_processing.pdf_text_extractor import (
     download_file_to_bytes,
     extract_pdf_markdown,
@@ -15,15 +15,13 @@ from models.file_processing.file_metadata import FileMetadata
 from models.file_processing.file_workflow_tracker import FileWorkflowTracker
 from models.file_processing.ocr_records import OCRInfo, OCROutputs
 from models.user.user import User
-from deps import get_db
+from deps import get_db, get_current_user
 from uuid import uuid4, UUID
 from datetime import datetime, timezone
-from core.config import OCRServiceConfigs, settings
-from core.configs.pf_configs import PFImageToTextConfigs
-from core.auth import verify_token
 from typing import Dict, Any
 import logging
 from models.usecase.usecase import UsecaseMetadata
+from core.config import OCRServiceConfigs, FileProcessingConfigs
 
 
 # Configure logger
@@ -102,7 +100,7 @@ async def upload_file(
     email: str = Form(...),
     usecase_id: UUID = Form(...),
     start_ocr: bool = Form(False),
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -129,22 +127,14 @@ async def upload_file(
 
     with db_session as db:
         try:
-            # Resolve user from token for security and reliability
-            user_email = token_payload.get("email")
-            if not user_email:
-                user_email = token_payload.get("sub") # Fallback to sub if email missing
-            
-            logger.info(f"Resolving user from token: {user_email}")
-            
-            # Get or Auto-Create User
-            user = db.query(User).filter(User.email == user_email).first()
-            if not user:
-                logger.info(f"User {user_email} not found in DB. Auto-creating from token.")
-                name = token_payload.get("name") or token_payload.get("nickname")
-                user = User(email=user_email, name=name)
-                db.add(user)
-                db.commit()
-                db.refresh(user)
+            # Verify usecase ownership
+            usecase = db.query(UsecaseMetadata).filter(
+                UsecaseMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.user_id == user.id,
+                UsecaseMetadata.is_deleted == False
+            ).first()
+            if not usecase:
+                raise HTTPException(status_code=404, detail="Usecase not found or access denied")
             
             logger.info(f"User identified: {user.id} (using usecase {usecase_id})")
 
@@ -161,14 +151,42 @@ async def upload_file(
             file_metadata_list = []
             for i, file in enumerate(files):
                 logger.info(f"Processing file {i+1}/{len(files)}: {file.filename}")
+                
+                # Security: Validate file size
+                file_size = 0
+                file.file.seek(0, os.SEEK_END)
+                file_size = file.file.tell()
+                file.file.seek(0)
+                
+                if file_size > FileProcessingConfigs.MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413, 
+                        detail=f"File {file.filename} exceeds the maximum size limit of {FileProcessingConfigs.MAX_FILE_SIZE // (1024 * 1024)}MB"
+                    )
+                
+                # Security: Validate file type
+                extension = os.path.splitext(file.filename)[1].lower()
+                if extension not in FileProcessingConfigs.ALLOWED_EXTENSIONS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File extension {extension} is not allowed. Supported: {', '.join(FileProcessingConfigs.ALLOWED_EXTENSIONS)}"
+                    )
+                
+                if file.content_type not in FileProcessingConfigs.ALLOWED_MIME_TYPES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File type {file.content_type} is not allowed. Supported: {', '.join(FileProcessingConfigs.ALLOWED_MIME_TYPES)}"
+                    )
+
                 success, message, url = upload_file_to_blob(file)
                 logger.info(f"Blob storage upload result for {file.filename}: Success={success}, Message={message}")
                 logger.info(f"File URL: {url}")
                 if success:
-                    logger.info(f"Creating metadata entry for file: {file.filename}")
+                    safe_filename = sanitize_filename(file.filename)
+                    logger.info(f"Creating metadata entry for file: {safe_filename}")
                     file_metadata = FileMetadata(
                         file_id=uuid4(),
-                        file_name=file.filename,
+                        file_name=safe_filename,
                         file_link=url,
                         user_id=user.id,
                         usecase_id=usecase_id,
@@ -320,7 +338,7 @@ async def upload_file(
 @router.get("/files/{usecase_id}", response_model=list[FileMetadataSchema])
 async def get_files_by_usecase(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -335,8 +353,10 @@ async def get_files_by_usecase(
     """
     with db_session as db:
         try:
-            files = db.query(FileMetadata).filter(
-                FileMetadata.usecase_id == usecase_id
+            files = db.query(FileMetadata).join(UsecaseMetadata, FileMetadata.usecase_id == UsecaseMetadata.usecase_id).filter(
+                FileMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.user_id == user.id,
+                UsecaseMetadata.is_deleted == False,
             ).all()
             
             return [FileMetadataSchema.from_orm(file) for file in files]
@@ -352,7 +372,7 @@ async def get_files_by_usecase(
 @router.get("/ocr/{usecase_id}/document-markdown")
 async def get_usecase_document_markdown(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -366,8 +386,10 @@ async def get_usecase_document_markdown(
     """
     with db_session as db:
         try:
-            files = db.query(FileMetadata).filter(
-                FileMetadata.usecase_id == usecase_id
+            files = db.query(FileMetadata).join(UsecaseMetadata, FileMetadata.usecase_id == UsecaseMetadata.usecase_id).filter(
+                FileMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.user_id == user.id,
+                UsecaseMetadata.is_deleted == False,
             ).order_by(FileMetadata.created_at.asc()).all()
 
             result_files = []
@@ -404,7 +426,7 @@ async def get_usecase_document_markdown(
 @router.get("/files/{usecase_id}/status", response_model=list[FileWorkflowTrackerSchema])
 async def get_usecase_file_status(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -422,8 +444,12 @@ async def get_usecase_file_status(
             workflow_status = db.query(FileWorkflowTracker).join(
                 FileMetadata, 
                 FileWorkflowTracker.file_id == FileMetadata.file_id
+            ).join(
+                UsecaseMetadata, FileMetadata.usecase_id == UsecaseMetadata.usecase_id
             ).filter(
-                FileMetadata.usecase_id == usecase_id
+                FileMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.user_id == user.id,
+                UsecaseMetadata.is_deleted == False,
             ).all()
             
             # Initialize empty values if None to satisfy schema validation
@@ -447,7 +473,7 @@ async def get_usecase_file_status(
 @router.get("/ocr/{usecase_id}/results")
 async def get_ocr_results(
     usecase_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -462,6 +488,15 @@ async def get_ocr_results(
     """
     with db_session as db:
         try:
+            # Verify usecase ownership
+            usecase = db.query(UsecaseMetadata).filter(
+                UsecaseMetadata.usecase_id == usecase_id,
+                UsecaseMetadata.user_id == user.id,
+                UsecaseMetadata.is_deleted == False
+            ).first()
+            if not usecase:
+                raise HTTPException(status_code=404, detail="Usecase not found or access denied")
+
             # Get all files for the usecase
             files = db.query(FileMetadata).filter(FileMetadata.usecase_id == usecase_id).all()
             
@@ -572,7 +607,7 @@ async def get_ocr_results(
 @router.get("/file_contents/retrieval/{file_id}")
 async def get_file_contents(
     file_id: UUID,
-    token_payload: Dict[str, Any] = Depends(verify_token),
+    user: User = Depends(get_current_user),
     db_session: Session = Depends(get_db)
 ):
     """
@@ -590,9 +625,13 @@ async def get_file_contents(
     """
     with db_session as db:
         try:
-            # Get file metadata
-            file_metadata = db.query(FileMetadata).filter(
-                FileMetadata.file_id == file_id
+            # Get file metadata with ownership check
+            file_metadata = db.query(FileMetadata).join(
+                UsecaseMetadata, FileMetadata.usecase_id == UsecaseMetadata.usecase_id
+            ).filter(
+                FileMetadata.file_id == file_id,
+                UsecaseMetadata.user_id == user.id,
+                UsecaseMetadata.is_deleted == False
             ).first()
             
             if not file_metadata:

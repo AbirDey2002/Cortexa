@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cortexa-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override DB_HOST to point to the host machine (Linux support via extra_hosts)
+      - DB_HOST=host.docker.internal
+      # Ensure file storage uses local (mapped volume) or azure as configured but accessible
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - ./backend/uploads:/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_URL: http://localhost:8000
+        VITE_AUTH0_DOMAIN: dev-cortexa.us.auth0.com
+        VITE_AUTH0_CLIENT_ID: mZsssHuHYJDJdZNET1s84uFac229AzZW
+        VITE_AUTH0_AUDIENCE: https://cortexa-api
+    container_name: cortexa-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
