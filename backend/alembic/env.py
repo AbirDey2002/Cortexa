@@ -23,6 +23,8 @@ from models.generator.test_case import TestCase
 from models.generator.test_script import TestScript
 from models.user.api_key import UserAPIKey
 
+from core.config import DatabaseConfigs
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
@@ -31,6 +33,9 @@ config = context.config
 # This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# Overwrite the sqlalchemy.url in the alembic.ini with the one from our config
+config.set_main_option("sqlalchemy.url", DatabaseConfigs.DATABASE_URL)
 
 # Set the metadata for 'autogenerate' support
 target_metadata = Base.metadata

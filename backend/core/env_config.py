@@ -24,21 +24,33 @@ def get_config_value(key: str, default: str | None = None) -> str:
 
 
 def get_database_config() -> dict:
+    mode = os.getenv("MODE", "local").lower()
+    
+    if mode == "prod":
+        # Production (Neon) Configuration
+        return {
+            "DB_USER": os.getenv("PROD_DB_USER"),
+            "DB_PASSWORD": os.getenv("PROD_DB_PASSWORD"),
+            "DB_HOST": os.getenv("PROD_DB_HOST"),
+            "DB_PORT": os.getenv("PROD_DB_PORT", "5432"),
+            "DB_NAME": os.getenv("PROD_DB_NAME", "cortexa"),
+            "DB_SSL_MODE": "require",
+        }
+    
+    # Local / Docker configuration
     run_mode = os.getenv("RUN_MODE", "local").lower()
-    db_host = os.getenv("DB_HOST", "localhost")
+    db_host = os.getenv("LOCAL_DB_HOST", "localhost")
 
-    # If running in Docker mode and DB_HOST is effectively 'localhost', 
-    # switch to 'host.docker.internal' to reach the host machine.
     if run_mode == "docker" and db_host in ("localhost", "127.0.0.1", "0.0.0.0"):
         db_host = "host.docker.internal"
     
     return {
-        "DB_USER": os.getenv("DB_USER", "postgres"),
-        "DB_PASSWORD": os.getenv("DB_PASSWORD", "postgres"),
+        "DB_USER": os.getenv("LOCAL_DB_USER", "postgres"),
+        "DB_PASSWORD": os.getenv("LOCAL_DB_PASSWORD", "postgres"),
         "DB_HOST": db_host,
-        "DB_PORT": os.getenv("DB_PORT", "5432"),
-        "DB_NAME": os.getenv("DB_NAME", "cortexa"),
-        "DB_SSL_MODE": os.getenv("DB_SSL_MODE", "disable"),
+        "DB_PORT": os.getenv("LOCAL_DB_PORT", "5432"),
+        "DB_NAME": os.getenv("LOCAL_DB_NAME", "cortexa"),
+        "DB_SSL_MODE": "disable",
     }
 
 

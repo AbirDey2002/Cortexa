@@ -12,6 +12,7 @@ engine = create_engine(
     pool_recycle=DatabasePoolConfigs.POOL_RECYCLE,
     pool_pre_ping=DatabasePoolConfigs.POOL_PRE_PING,
     echo=DatabasePoolConfigs.ECHO,
+    connect_args={"sslmode": "require"} if "sslmode=require" in DatabaseConfigs.DATABASE_URL else {},
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

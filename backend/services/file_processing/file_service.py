@@ -1,10 +1,8 @@
 import os
 import re
 from typing import Tuple
-from azure.storage.blob import BlobServiceClient
-import boto3
-from botocore.client import Config as BotoConfig
-from core.config import AzureBlobStorageConfigs, S3StorageConfigs, FileStorageConfigs, HostingConfigs
+from core.config import FileStorageConfigs, HostingConfigs
+
 
 
 def sanitize_filename(filename: str) -> str:
@@ -21,60 +19,10 @@ def sanitize_filename(filename: str) -> str:
     return filename
 
 
-def _upload_to_azure(file) -> Tuple[bool, str, str | None]:
-    try:
-        blob_service_client = BlobServiceClient.from_connection_string(AzureBlobStorageConfigs.CONNECTION_STRING)
-        container_client = blob_service_client.get_container_client(AzureBlobStorageConfigs.CONTAINER_NAME)
-        
-        filename = sanitize_filename(file.filename)
-        blob_client = container_client.get_blob_client(filename)
-        
-        file_content = file.file.read()
-        blob_client.upload_blob(file_content, overwrite=True)
-        url = blob_client.url
-        return True, f"File '{filename}' uploaded successfully to Azure Blob Storage.", url
-    except Exception as e:
-        return False, f"Error uploading file to Azure Blob: {e}", None
 
 
-def _upload_to_s3(file) -> Tuple[bool, str, str | None]:
-    try:
-        has_explicit_creds = (
-            S3StorageConfigs.ACCESS_KEY_ID and 
-            S3StorageConfigs.SECRET_ACCESS_KEY and 
-            S3StorageConfigs.SESSION_TOKEN
-        )
-        if has_explicit_creds:
-            credentials = {
-                "aws_access_key_id": S3StorageConfigs.ACCESS_KEY_ID,
-                "aws_secret_access_key": S3StorageConfigs.SECRET_ACCESS_KEY,
-                "aws_session_token": S3StorageConfigs.SESSION_TOKEN,
-                "region_name": S3StorageConfigs.REGION or "us-east-1",
-                "config": BotoConfig(s3={"addressing_style": "virtual"}),
-            }
-        else:
-            credentials = {
-                "region_name": S3StorageConfigs.REGION or "us-east-1",
-                "config": BotoConfig(s3={"addressing_style": "virtual"}),
-            }
 
-        s3_client = boto3.client("s3", **credentials)
-        
-        filename = sanitize_filename(file.filename)
-        file_content = file.file.read()
-        object_key = filename
-        bucket_name = S3StorageConfigs.BUCKET_NAME
-        if not bucket_name:
-            return False, "S3 bucket name is not configured.", None
-        s3_client.put_object(Bucket=bucket_name, Key=object_key, Body=file_content)
-        url = s3_client.generate_presigned_url(
-            ClientMethod='get_object',
-            Params={'Bucket': bucket_name, 'Key': object_key},
-            ExpiresIn=86400
-        )
-        return True, f"File '{filename}' uploaded successfully to S3.", url
-    except Exception as e:
-        return False, f"Error uploading file to S3: {e}", None
+
 
 
 def _save_to_local(file) -> Tuple[bool, str, str | None]:
@@ -93,13 +41,55 @@ def _save_to_local(file) -> Tuple[bool, str, str | None]:
         return False, f"Error saving file locally: {e}", None
 
 
+def _upload_to_firebase(file) -> Tuple[bool, str, str | None]:
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, storage
+        from core.config import FirebaseConfigs
+        
+        # Initialize Firebase app if not already initialized
+        if not firebase_admin._apps:
+            # Check if service account file exists
+            if not os.path.exists(FirebaseConfigs.SERVICE_ACCOUNT_PATH):
+                return False, f"Service account file not found at {FirebaseConfigs.SERVICE_ACCOUNT_PATH}", None
+            
+            # Strip gs:// if present in bucket name
+            bucket_name = FirebaseConfigs.STORAGE_BUCKET
+            if bucket_name.startswith("gs://"):
+                bucket_name = bucket_name[5:]
+                
+            cred = credentials.Certificate(FirebaseConfigs.SERVICE_ACCOUNT_PATH)
+            firebase_admin.initialize_app(cred, {
+                'storageBucket': bucket_name
+            })
+
+            
+        bucket = storage.bucket()
+        filename = sanitize_filename(file.filename)
+        blob = bucket.blob(f"uploads/{filename}")
+        
+        # Ensure we start reading from the beginning
+        file.file.seek(0)
+        blob.upload_from_file(file.file, content_type=file.content_type)
+        
+        # Make public key
+        blob.make_public()
+        
+        return True, f"File '{filename}' uploaded successfully to Firebase Storage.", blob.public_url
+
+    except ImportError:
+        return False, "firebase-admin package not installed. Run 'pip install firebase-admin'", None
+    except Exception as e:
+        return False, f"Error uploading file to Firebase: {e}", None
+
+
 def upload_file_to_blob(file):
-    provider = (FileStorageConfigs.PROVIDER or "azure").lower()
-    if provider == "s3":
-        return _upload_to_s3(file)
-    elif provider == "local":
-        return _save_to_local(file)
+    provider = (FileStorageConfigs.PROVIDER or "local").lower()
+    
+    if provider == "firebase":
+        return _upload_to_firebase(file)
     else:
-        return _upload_to_azure(file)
+        # Default to local if not firebase
+        return _save_to_local(file)
 
 
